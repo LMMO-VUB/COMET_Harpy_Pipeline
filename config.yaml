@@ -1,0 +1,19 @@
+# =====================================================================
+# COMET SPATIAL PIPELINE RUN CONFIGURATION
+# Researchers: Edit this file in Notepad before running the pipeline.
+# 
+# =====================================================================
+
+# Name of Project
+name_of_project: "tonsil_spyre"
+
+# File Paths
+metadata_file: "metadata_markers.csv"
+HALO_data_file: "data/halo_exports/tonsil_spyre_formatted.csv"
+
+# Output Destination 
+output_directory: "snakeTest_results"
+
+# Options
+pca_dims: 5
+clustering_resolution: 0.5
