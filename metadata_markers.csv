@@ -1,0 +1,18 @@
+﻿### Metadata for the snakemake automatic pipeline. Insert channel (exact name of protein/transcript),,
+"### type (""Protein"" or ""Transcript"")   & localization (For Proteins: ""Cytoplasm"" or """"Nucleus"")",,
+channel,type,localization
+DAPI,Other,Cytoplasm
+CD3,Protein,Cytoplasm
+CD4,Protein,Cytoplasm
+CD8,Protein,Cytoplasm
+FOXP3,Protein,Nucleus
+CD20,Protein,Nucleus
+CD56,Protein,Nucleus
+CD11c,Protein,Nucleus
+CD68,Protein,Nucleus
+aSMA,Protein,Nucleus
+PD-L1,Protein,Cytoplasm
+CD45,Protein,Cytoplasm
+PD-1,Protein,Cytoplasm
+Cytokeratin,Protein,Cytoplasm
+Ki-67,Protein,Cytoplasm
