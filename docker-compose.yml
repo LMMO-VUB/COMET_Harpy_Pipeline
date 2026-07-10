@@ -1,0 +1,18 @@
+services:
+  comet_pipeline:
+    image: spatial_pipeline:v1
+    container_name: comet_pipeline
+    volumes:
+      # Pipeline code: permanent, local, read-only inside the container.
+      # Update by running "git pull" inside pipeline_code — no rebuild needed.
+      - C:\Users\Yves\Comet_Data\Comet_Pipeline\pipeline_code:/pipeline:ro
+
+      # Researcher's run folder on the network drive: inputs in, results out.
+      # RUN_DIR is set by Run_COMET_Pipeline.bat before this is launched.
+      - ${RUN_DIR}:/data
+
+    # Streamlit's annotation portal needs to be reachable from the host browser.
+    ports:
+      - "8501:8501"
+
+    entrypoint: ["bash", "/pipeline/entrypoint.sh"]
