@@ -322,7 +322,11 @@ rule annotate_clusters:
 		# Launch streamlit as a background process
 		# Passing the target file paths so the app knows where to save
 		cmd = [
-			"streamlit", "run", "app.py", "--", 
+			"streamlit", "run", "app.py",
+			"--server.address=0.0.0.0",
+			"--server.port=8501",
+			"--server.headless=true",
+			"--", 
 			"--input", input.h5ad, 
 			"--output", output.annotated_h5ad,
 			"--img_dir", f"{output_directory}/images"
