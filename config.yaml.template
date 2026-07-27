@@ -1,0 +1,52 @@
+# =====================================================================
+# COMET SPATIAL PIPELINE RUN CONFIGURATION
+#
+# HOW TO USE:
+#   1. Copy this file into your run folder (the one you point the
+#      launcher at) and rename the copy to exactly:  config.yaml
+#   2. Edit the values below in Notepad.
+#   3. Put your HALO/Horizon export CSV in that same run folder
+#      (or a subfolder of it) and update HALO_data_file to match.
+#   4. Run RUN_COMET_PIPELINE.BAT and point it at your run folder.
+#
+# Your run folder should look like this before you start:
+#   Z:\Yves\Run_2026_06_30\
+#     config.yaml                          <- this file, filled in
+#     tonsil_export.csv                    <- your HALO/Horizon export
+#     metadata_markers.csv                 <- optional, see below
+#
+# =====================================================================
+
+# Name of Project
+# Used to name output files, e.g. "tonsil_spyre" -> tonsil_spyre.h5ad
+name_of_project: "my_project"
+
+# File Paths
+# Both paths are relative to this run folder unless you give a full path.
+#
+# metadata_file: tells the pipeline which channel is which (Protein or
+#   Transcript, Nucleus or Cytoplasm). If this file does NOT exist yet,
+#   the pipeline will auto-generate it for you from your HALO_data_file
+#   the first time you run it, then STOP so you can review it.
+#   Open it, check every row (especially any the console flagged as
+#   "unknown marker"), fix anything wrong, save, and run again.
+metadata_file: "metadata_markers.csv"
+
+# HALO_data_file: your raw per-cell export CSV from HALO or Horizon.
+HALO_data_file: "your_export.csv"
+
+# Output Destination
+# Where results (h5ad files, plots, final Seurat .rds) get written.
+# Will be created inside your run folder if it doesn't exist.
+output_directory: "results"
+
+# Options
+# pca_dims: how many principal components to use for neighbor graph /
+#   clustering. 5 is a reasonable default for a small-to-medium marker
+#   panel; raise it if you have a large panel (30+ markers).
+pca_dims: 5
+
+# clustering_resolution: higher = more, smaller clusters. Typical range
+#   is 0.3 - 1.0. Start at 0.5 and re-run with a different value if the
+#   clusters look too coarse or too fragmented in the UMAP plots.
+clustering_resolution: 0.5

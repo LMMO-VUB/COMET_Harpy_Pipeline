@@ -1,0 +1,13 @@
+name: sproteo_fresh
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - squidpy
+  - scikit-image
+  - scipy=1.11
+  - numpy=1.26
+  - python=3.10
+  - snakemake
+prefix: /Users/JackBrons/miniconda3/envs/sproteo_fresh

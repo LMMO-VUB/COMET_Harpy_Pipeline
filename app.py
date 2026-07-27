@@ -38,17 +38,25 @@ col_left, col_right = st.columns([3, 7], gap="large")
 with col_left:
     st.subheader("Assign Cell Types")
     st.caption("Type labels below. Press Enter to commit, use Down Arrow to navigate, and Enter to edit the next row.")
-    
+    st.caption("Tip: always press Enter to save a cell. Pressing Esc while a cell is selected can clear its value instead of leaving it unchanged.")
+
     # Passing the dataframe directly without an on_change callback prevents reruns mid-typing
     # Key parameter ensures structural persistence across navigation events
     edited_output = st.data_editor(
-        st.session_state.base_table, 
-        disabled=["Cluster ID"], 
+        st.session_state.base_table,
+        disabled=["Cluster ID"],
         hide_index=True,
         width='stretch',
         num_rows="fixed",
         key="static_editor"
     )
+
+    n_labeled = int((edited_output["Assigned Cell Type"].astype(str).str.strip() != "").sum())
+    n_total = len(edited_output)
+    if n_labeled < n_total:
+        st.info(f"{n_labeled} of {n_total} clusters labeled.")
+    else:
+        st.success(f"All {n_total} clusters labeled.")
 
     st.markdown("---")
     if st.button("Finalize & Resume Pipeline", type="primary", width='stretch'):
