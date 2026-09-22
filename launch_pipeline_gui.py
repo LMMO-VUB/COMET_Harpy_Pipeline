@@ -99,6 +99,15 @@ def _free_drive_letter(net_use_out: str) -> str:
     raise RuntimeError("No free drive letters available to map the network share.")
 
 
+def _is_network_drive(drive_letter: str) -> bool:
+    """Return True if a drive letter (e.g. 'Z:') is a mapped network drive."""
+    r = subprocess.run(
+        ["net", "use", f"{drive_letter}:"],
+        capture_output=True, text=True,
+    )
+    return r.returncode == 0
+
+
 def _resolve_docker_path(path: str) -> str:
     """
     Docker Desktop on Windows cannot mount UNC paths (\\\\server\\share\\...).
@@ -525,22 +534,69 @@ class CometLauncherApp(tk.Tk):
         run_dir = out_folder
         os.makedirs(run_dir, exist_ok=True)
 
-        # Docker cannot mount UNC paths — convert to a drive-letter path
+        # ── Determine the folder Docker will actually mount as /data ─────────
+        #
+        # Docker Desktop on Windows (WSL2 backend) can only mount LOCAL drives.
+        # Network shares — whether accessed via UNC (\\server\share) or a mapped
+        # drive letter (Z:\) — are invisible inside the WSL2 VM that runs Docker,
+        # so the volume mount silently appears as an empty directory.
+        #
+        # Strategy:
+        #   1. Convert any UNC path to a drive letter (net use), as before.
+        #   2. If that drive letter is a network drive, create a LOCAL staging
+        #      folder under %LOCALAPPDATA%\COMET\<project> and run Docker there.
+        #   3. After the pipeline finishes, copy all results back to run_dir.
+
         try:
             docker_run_dir = _resolve_docker_path(run_dir)
         except RuntimeError as exc:
             messagebox.showerror("Network path not usable with Docker", str(exc))
             return
 
-        # Copy CSV to run_dir if it lives elsewhere (Docker needs it under /data)
-        csv_in_run = os.path.join(run_dir, os.path.basename(csv_abs))
+        # Detect whether the resolved path lands on a network drive.
+        drive = docker_run_dir[:1].upper()
+        needs_staging = (
+            docker_run_dir.startswith("\\\\")  # still a UNC (shouldn't happen)
+            or (drive.isalpha() and _is_network_drive(drive))
+        )
+
+        staging_dir: "str | None" = None
+        docker_data_dir = docker_run_dir   # the path Docker will mount
+
+        if needs_staging:
+            local_app = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+            staging_dir = os.path.join(local_app, "COMET", f"{project_name}_{port}")
+            docker_data_dir = staging_dir
+
+        # Copy CSV to the data dir Docker will see
+        data_dir_for_csv = staging_dir if staging_dir else run_dir
+        csv_in_run = os.path.join(data_dir_for_csv, os.path.basename(csv_abs))
         needs_copy = os.path.abspath(csv_in_run) != csv_abs
 
         self._log_clear()
 
-        if needs_copy:
+        if staging_dir:
             self._log_write(
-                f"[COMET] Copying data file to output folder…\n"
+                f"[COMET] Network drive detected — Docker will use a local staging folder.\n"
+                f"        Results will be copied to your output folder after the pipeline finishes.\n\n"
+                f"[COMET] Staging folder → {staging_dir}\n\n"
+            )
+            try:
+                os.makedirs(staging_dir, exist_ok=True)
+            except OSError as exc:
+                messagebox.showerror("Could not create staging folder", str(exc))
+                return
+        elif docker_run_dir != run_dir:
+            self._log_write(
+                f"[COMET] Network path mapped for Docker:\n"
+                f"        {run_dir}\n"
+                f"     →  {docker_run_dir}\n\n"
+            )
+
+        if needs_copy:
+            dest_label = staging_dir if staging_dir else run_dir
+            self._log_write(
+                f"[COMET] Copying data file…\n"
                 f"        {csv_abs}\n"
                 f"     →  {csv_in_run}\n"
             )
@@ -551,21 +607,22 @@ class CometLauncherApp(tk.Tk):
                 messagebox.showerror("File copy failed", str(exc))
                 return
 
-        if docker_run_dir != run_dir:
-            self._log_write(
-                f"[COMET] Network path mapped for Docker:\n"
-                f"        {run_dir}\n"
-                f"     →  {docker_run_dir}\n\n"
-            )
-
         try:
             cfg = _write_config(
-                run_dir, project_name, os.path.basename(csv_abs),
+                data_dir_for_csv, project_name, os.path.basename(csv_abs),
                 pca_dims, resolution, port,
             )
         except OSError as exc:
             messagebox.showerror("Config write failed", str(exc))
             return
+
+        # Always write a copy of config.yaml to the user-facing run_dir too.
+        if staging_dir:
+            try:
+                _write_config(run_dir, project_name, os.path.basename(csv_abs),
+                              pca_dims, resolution, port)
+            except OSError:
+                pass  # non-fatal — the staging copy is what Docker uses
 
         self._log_write(f"[COMET] Config written → {cfg}\n")
         self._log_write(f"[COMET] Run folder     → {run_dir}\n\n")
@@ -578,7 +635,8 @@ class CometLauncherApp(tk.Tk):
         self._active_port    = port
 
         threading.Thread(
-            target=self._docker_thread, args=(run_dir, docker_run_dir, port),
+            target=self._docker_thread,
+            args=(run_dir, docker_data_dir, staging_dir, port),
             daemon=True,
         ).start()
 
@@ -595,7 +653,13 @@ class CometLauncherApp(tk.Tk):
 
     # ── Docker thread ────────────────────────────────────────────────────────
 
-    def _docker_thread(self, run_dir: str, docker_run_dir: str, port: int) -> None:
+    def _docker_thread(
+        self,
+        run_dir: str,
+        docker_data_dir: str,
+        staging_dir: "str | None",
+        port: int,
+    ) -> None:
         # Step 1 — ensure Docker is running
         if not _docker_is_running():
             self._log_write(
@@ -647,7 +711,7 @@ class CometLauncherApp(tk.Tk):
         self._log_write("[COMET] Starting pipeline…\n\n")
 
         env = os.environ.copy()
-        env["RUN_DIR"]        = docker_run_dir   # drive-letter path for Docker
+        env["RUN_DIR"]        = docker_data_dir   # local path Docker can actually mount
         env["STREAMLIT_PORT"] = str(port)
 
         # --exit-code-from makes docker compose return the container's exit code.
