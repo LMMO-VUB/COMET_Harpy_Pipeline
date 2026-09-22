@@ -22,9 +22,10 @@ services:
       - PYTHONUNBUFFERED=1
 
     # Inline command avoids shell-script line-ending issues on Windows.
-    # Seeds metadata_markers.csv into /data if absent, then runs Snakemake
-    # with /data as working directory so all relative config paths resolve there.
+    # Seeds metadata_markers.csv into /data if absent, then runs Snakemake.
+    # --unlock clears any stale lock left by a previous force-kill before
+    # the real run starts (harmless when no lock exists).
     entrypoint:
       - "bash"
       - "-c"
-      - "set -e && echo '[entrypoint] Pipeline: /pipeline  Data: /data' && if [ ! -f /data/metadata_markers.csv ] && [ -f /pipeline/metadata_markers.csv ]; then echo '[entrypoint] Copying metadata_markers.csv...'; cp /pipeline/metadata_markers.csv /data/metadata_markers.csv; fi && echo '[entrypoint] Starting Snakemake...' && exec snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --cores all --rerun-incomplete"
+      - "set -e && echo '[entrypoint] Pipeline: /pipeline  Data: /data' && if [ ! -f /data/metadata_markers.csv ] && [ -f /pipeline/metadata_markers.csv ]; then echo '[entrypoint] Copying metadata_markers.csv...'; cp /pipeline/metadata_markers.csv /data/metadata_markers.csv; fi && echo '[entrypoint] Clearing any stale Snakemake lock...' && snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --unlock 2>/dev/null || true && echo '[entrypoint] Starting Snakemake...' && exec snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --cores all --rerun-incomplete"
