@@ -5,13 +5,14 @@ launch_pipeline_gui.py
 Windows GUI launcher for the COMET Spatial Pipeline.
 Double-click RUN_COMET_PIPELINE.BAT to open this window.
 
-This file lives in the root of the pipeline_code git repository,
+This file lives in the root of the pipeline git repository,
 alongside docker-compose.yml and the Snakefile.
 """
 
 import os
 import re
 import sys
+import time
 import platform
 import subprocess
 import threading
@@ -33,6 +34,20 @@ except ImportError:
 # This script lives in the repo root alongside docker-compose.yml.
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 COMPOSE_FILE = os.path.join(SCRIPT_DIR, "docker-compose.yml")
+
+# Common install locations for Docker Desktop on Windows.
+_DOCKER_DESKTOP_CANDIDATES = [
+    os.path.join(
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        "Docker", "Docker", "Docker Desktop.exe",
+    ),
+    os.path.join(
+        os.environ.get("LOCALAPPDATA", ""),
+        "Programs", "Docker", "Docker", "Docker Desktop.exe",
+    ),
+]
+
+DOCKER_READY_TIMEOUT = 120   # seconds to wait for Docker to become ready
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +90,7 @@ def _write_config(
 
 
 def _popen_kwargs() -> dict:
-    """Return platform-specific kwargs for Popen (hide console window on Windows)."""
+    """Return platform-specific Popen kwargs (hide console window on Windows)."""
     kw: dict = {}
     if platform.system() == "Windows":
         si = subprocess.STARTUPINFO()
@@ -83,6 +98,28 @@ def _popen_kwargs() -> dict:
         si.wShowWindow = subprocess.SW_HIDE
         kw["startupinfo"] = si
     return kw
+
+
+def _docker_is_running() -> bool:
+    """Return True if the Docker daemon responds."""
+    try:
+        r = subprocess.run(
+            ["docker", "info"],
+            capture_output=True,
+            timeout=6,
+            **_popen_kwargs(),
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _find_docker_desktop() -> "str | None":
+    """Return path to Docker Desktop.exe, or None if not found."""
+    for path in _DOCKER_DESKTOP_CANDIDATES:
+        if path and os.path.isfile(path):
+            return path
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +164,13 @@ class CometLauncherApp(tk.Tk):
             fg="white", bg="#1a3a5c",
         ).pack(side="left", padx=12, pady=9)
 
+        # Docker status indicator
+        self._docker_lbl = tk.Label(
+            hdr, text="⬤ Docker: checking…",
+            font=("Helvetica", 9), fg="#aaaaaa", bg="#1a3a5c",
+        )
+        self._docker_lbl.pack(side="right", padx=12)
+
         # ── Main frame ──────────────────────────────────────────────────────
         main = ttk.Frame(self, padding=12)
         main.pack(fill="both", expand=True)
@@ -170,7 +214,6 @@ class CometLauncherApp(tk.Tk):
         param_lf = ttk.LabelFrame(main, text="Pipeline Parameters", padding=8)
         param_lf.pack(fill="x", **pad)
 
-        # Row 0 — PCA
         ttk.Label(param_lf, text="PCA dimensions:").grid(row=0, column=0, sticky="w")
         self._pca_var = tk.IntVar(value=8)
         ttk.Spinbox(
@@ -180,7 +223,6 @@ class CometLauncherApp(tk.Tk):
             param_lf, text="5–15 is typical for 20–40 markers", foreground="gray",
         ).grid(row=0, column=2, sticky="w")
 
-        # Row 1 — Clustering resolution
         ttk.Label(param_lf, text="Clustering resolution:").grid(
             row=1, column=0, sticky="w", pady=(6, 0)
         )
@@ -194,7 +236,6 @@ class CometLauncherApp(tk.Tk):
             foreground="gray",
         ).grid(row=1, column=2, sticky="w", pady=(6, 0))
 
-        # Row 2 — Streamlit port
         ttk.Label(param_lf, text="Annotation portal port:").grid(
             row=2, column=0, sticky="w", pady=(6, 0)
         )
@@ -251,6 +292,21 @@ class CometLauncherApp(tk.Tk):
         # Trace CSV path changes → auto-fill project name
         self._csv_var.trace_add("write", self._on_csv_change)
 
+        # Check Docker status in the background on startup
+        threading.Thread(target=self._check_docker_status, daemon=True).start()
+
+    # ── Docker status check on startup ─────────────────────────────────────
+
+    def _check_docker_status(self) -> None:
+        if _docker_is_running():
+            self.after(0, lambda: self._docker_lbl.configure(
+                text="⬤ Docker: running", fg="#5fba7d"
+            ))
+        else:
+            self.after(0, lambda: self._docker_lbl.configure(
+                text="⬤ Docker: not running", fg="#e06c75"
+            ))
+
     # ── Event handlers ──────────────────────────────────────────────────────
 
     def _on_csv_change(self, *_) -> None:
@@ -267,13 +323,10 @@ class CometLauncherApp(tk.Tk):
             self._csv_var.set(os.path.normpath(path))
 
     def _on_launch(self) -> None:
-        # ── Validate inputs ─────────────────────────────────────────────────
         csv_path = self._csv_var.get().strip()
         if not csv_path or not os.path.isfile(csv_path):
-            messagebox.showerror(
-                "No input file",
-                "Please select a valid CSV file before launching.",
-            )
+            messagebox.showerror("No input file",
+                                 "Please select a valid CSV file before launching.")
             return
 
         project_name = self._name_var.get().strip()
@@ -305,15 +358,10 @@ class CometLauncherApp(tk.Tk):
 
         run_dir = os.path.dirname(os.path.abspath(csv_path))
 
-        # ── Write config.yaml ───────────────────────────────────────────────
         try:
             cfg = _write_config(
-                run_dir,
-                project_name,
-                os.path.basename(csv_path),
-                pca_dims,
-                resolution,
-                port,
+                run_dir, project_name, os.path.basename(csv_path),
+                pca_dims, resolution, port,
             )
         except OSError as exc:
             messagebox.showerror("Config write failed", str(exc))
@@ -321,10 +369,8 @@ class CometLauncherApp(tk.Tk):
 
         self._log_clear()
         self._log_write(f"[COMET] Config written → {cfg}\n")
-        self._log_write(f"[COMET] Run folder     → {run_dir}\n")
-        self._log_write(f"[COMET] Starting Docker…\n\n")
+        self._log_write(f"[COMET] Run folder     → {run_dir}\n\n")
 
-        # ── Update button states ────────────────────────────────────────────
         self._launch_btn.configure(state="disabled")
         self._stop_btn.configure(state="normal")
         self._portal_btn.configure(state="disabled")
@@ -332,11 +378,8 @@ class CometLauncherApp(tk.Tk):
         self._running        = True
         self._active_port    = port
 
-        # ── Launch in background thread ─────────────────────────────────────
         threading.Thread(
-            target=self._docker_thread,
-            args=(run_dir, port),
-            daemon=True,
+            target=self._docker_thread, args=(run_dir, port), daemon=True
         ).start()
 
     def _on_stop(self) -> None:
@@ -353,6 +396,58 @@ class CometLauncherApp(tk.Tk):
     # ── Docker thread ───────────────────────────────────────────────────────
 
     def _docker_thread(self, run_dir: str, port: int) -> None:
+        # ── Step 1: ensure Docker is running ────────────────────────────────
+        if not _docker_is_running():
+            self._log_write("[COMET] Docker is not running — starting Docker Desktop…\n")
+            self.after(0, lambda: self._docker_lbl.configure(
+                text="⬤ Docker: starting…", fg="#e5c07b"
+            ))
+
+            exe = _find_docker_desktop()
+            if not exe:
+                self._log_write(
+                    "[ERROR] Docker Desktop not found.\n"
+                    "Please install it from https://www.docker.com/products/docker-desktop/\n"
+                    "then try again.\n"
+                )
+                self._finish(None)
+                return
+
+            try:
+                subprocess.Popen([exe], **_popen_kwargs())
+            except Exception as exc:
+                self._log_write(f"[ERROR] Could not launch Docker Desktop: {exc}\n")
+                self._finish(None)
+                return
+
+            # Poll until Docker daemon responds
+            self._log_write("[COMET] Waiting for Docker to be ready")
+            deadline = time.time() + DOCKER_READY_TIMEOUT
+            ready = False
+            while time.time() < deadline:
+                time.sleep(3)
+                self._log_write(".")
+                if _docker_is_running():
+                    ready = True
+                    break
+
+            if not ready:
+                self._log_write(
+                    f"\n[ERROR] Docker did not start within {DOCKER_READY_TIMEOUT}s.\n"
+                    "Please open Docker Desktop manually and wait until it shows\n"
+                    "'Docker Desktop is running', then click Launch again.\n"
+                )
+                self._finish(None)
+                return
+
+            self._log_write("\n[COMET] Docker is ready.\n\n")
+            self.after(0, lambda: self._docker_lbl.configure(
+                text="⬤ Docker: running", fg="#5fba7d"
+            ))
+
+        # ── Step 2: run the pipeline ─────────────────────────────────────────
+        self._log_write("[COMET] Starting pipeline…\n\n")
+
         env = os.environ.copy()
         env["RUN_DIR"]        = run_dir
         env["STREAMLIT_PORT"] = str(port)
@@ -373,8 +468,7 @@ class CometLauncherApp(tk.Tk):
         except FileNotFoundError:
             self._log_write(
                 "[ERROR] 'docker' command not found.\n"
-                "Please install Docker Desktop and ensure it is running,\n"
-                "then try again.\n"
+                "Please install Docker Desktop from https://www.docker.com/\n"
             )
             self._finish(None)
             return
@@ -403,15 +497,15 @@ class CometLauncherApp(tk.Tk):
     def _finish(self, retcode: "int | None") -> None:
         self._running = False
         self._process = None
+        # Re-check Docker status after pipeline ends
+        threading.Thread(target=self._check_docker_status, daemon=True).start()
 
         def _ui() -> None:
             self._launch_btn.configure(state="normal")
             self._stop_btn.configure(state="disabled")
             if retcode == 0:
                 self._log_write("\n[COMET] Pipeline finished successfully.\n")
-                messagebox.showinfo(
-                    "Done", "The COMET pipeline completed successfully!"
-                )
+                messagebox.showinfo("Done", "The COMET pipeline completed successfully!")
             elif retcode is not None:
                 self._log_write(
                     f"\n[COMET] Pipeline exited with code {retcode}.\n"
@@ -423,7 +517,6 @@ class CometLauncherApp(tk.Tk):
     # ── Log helpers ─────────────────────────────────────────────────────────
 
     def _log_write(self, text: str) -> None:
-        """Thread-safe append to the log widget."""
         def _do():
             self._log.configure(state="normal")
             self._log.insert("end", text)
