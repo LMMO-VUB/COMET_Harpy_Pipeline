@@ -600,6 +600,7 @@ rule process_halo:
 			plt.close()
 
 		print("Performing Neighborhood Enrichment Analysis")
+		import sys; sys.stdout.flush()
 		hp.tb.nhood_enrichment(
 			sdata,
 			labels_layer    = "halo_labels",
@@ -607,6 +608,8 @@ rule process_halo:
 			output_layer    = "table_score_genes_enrichment",
 			celltype_column = "leiden_clusters",
 		)
+		print("Neighborhood Enrichment done.")
+		sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_score_genes_enrichment",
