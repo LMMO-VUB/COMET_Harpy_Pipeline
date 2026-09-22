@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import time
+import shutil
 import platform
 import subprocess
 import threading
@@ -138,6 +139,10 @@ class CometLauncherApp(tk.Tk):
         self._browser_opened = False
         self._active_port = 8501
 
+        self._csv_var = tk.StringVar()
+        self._name_var = tk.StringVar()
+        self._out_var  = tk.StringVar()
+
         self._build_ui()
         self._center_window()
 
@@ -179,7 +184,6 @@ class CometLauncherApp(tk.Tk):
         file_lf = ttk.LabelFrame(main, text="Input Data File", padding=8)
         file_lf.pack(fill="x", **pad)
 
-        self._csv_var = tk.StringVar()
         ttk.Entry(file_lf, textvariable=self._csv_var, width=65).grid(
             row=0, column=0, sticky="ew", padx=(0, 6)
         )
@@ -199,7 +203,6 @@ class CometLauncherApp(tk.Tk):
         proj_lf.pack(fill="x", **pad)
 
         ttk.Label(proj_lf, text="Project name:").grid(row=0, column=0, sticky="w")
-        self._name_var = tk.StringVar()
         ttk.Entry(proj_lf, textvariable=self._name_var, width=42).grid(
             row=0, column=1, sticky="ew", padx=(8, 0)
         )
@@ -209,6 +212,24 @@ class CometLauncherApp(tk.Tk):
             foreground="gray",
         ).grid(row=1, column=1, sticky="w", pady=(1, 0))
         proj_lf.columnconfigure(1, weight=1)
+
+        # ── Output folder ───────────────────────────────────────────────────
+        out_lf = ttk.LabelFrame(main, text="Output Folder", padding=8)
+        out_lf.pack(fill="x", **pad)
+
+        ttk.Entry(out_lf, textvariable=self._out_var, width=65).grid(
+            row=0, column=0, sticky="ew", padx=(0, 6)
+        )
+        ttk.Button(out_lf, text="Browse…", command=self._browse_out).grid(
+            row=0, column=1
+        )
+        out_lf.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            out_lf,
+            text="Results folder will be created here. Defaults to the same folder as the CSV.",
+            foreground="gray",
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # ── Pipeline parameters ─────────────────────────────────────────────
         param_lf = ttk.LabelFrame(main, text="Pipeline Parameters", padding=8)
@@ -259,11 +280,12 @@ class CometLauncherApp(tk.Tk):
             log_lf,
             height=14,
             state="disabled",
-            font=("Courier New", 9),
+            font=("Consolas", 11),
             wrap="word",
             bg="#1e1e1e",
             fg="#d4d4d4",
-            insertbackground="white",
+            insertbackground="#d4d4d4",
+            cursor="arrow",
         )
         self._log.pack(fill="both", expand=True)
 
@@ -313,6 +335,9 @@ class CometLauncherApp(tk.Tk):
         path = self._csv_var.get()
         if path and os.path.isfile(path):
             self._name_var.set(_safe_project_name(path))
+            # Auto-fill output folder only if the user hasn't already picked one
+            if not self._out_var.get():
+                self._out_var.set(os.path.dirname(os.path.abspath(path)))
 
     def _browse_csv(self) -> None:
         path = filedialog.askopenfilename(
@@ -321,6 +346,15 @@ class CometLauncherApp(tk.Tk):
         )
         if path:
             self._csv_var.set(os.path.normpath(path))
+
+    def _browse_out(self) -> None:
+        initial = self._out_var.get() or None
+        folder = filedialog.askdirectory(
+            title="Choose output folder for results",
+            initialdir=initial,
+        )
+        if folder:
+            self._out_var.set(os.path.normpath(folder))
 
     def _on_launch(self) -> None:
         csv_path = self._csv_var.get().strip()
@@ -356,18 +390,44 @@ class CometLauncherApp(tk.Tk):
             )
             return
 
-        run_dir = os.path.dirname(os.path.abspath(csv_path))
+        # Determine run / output folder
+        csv_abs = os.path.abspath(csv_path)
+        out_folder = self._out_var.get().strip()
+        if not out_folder:
+            out_folder = os.path.dirname(csv_abs)
+
+        run_dir = out_folder
+        os.makedirs(run_dir, exist_ok=True)
+
+        # If the CSV lives somewhere else, copy it into the output folder so
+        # Docker can see it under /data (the mounted run_dir).
+        csv_in_run = os.path.join(run_dir, os.path.basename(csv_abs))
+        needs_copy = os.path.abspath(csv_in_run) != csv_abs
+
+        self._log_clear()
+        if needs_copy:
+            self._log_write(
+                f"[COMET] Copying data file to output folder…\n"
+                f"        {csv_abs}\n"
+                f"     →  {csv_in_run}\n"
+            )
+            try:
+                shutil.copy2(csv_abs, csv_in_run)
+                self._log_write("[COMET] Copy done.\n\n")
+            except OSError as exc:
+                messagebox.showerror("File copy failed", str(exc))
+                return
+        csv_filename = os.path.basename(csv_abs)
 
         try:
             cfg = _write_config(
-                run_dir, project_name, os.path.basename(csv_path),
+                run_dir, project_name, csv_filename,
                 pca_dims, resolution, port,
             )
         except OSError as exc:
             messagebox.showerror("Config write failed", str(exc))
             return
 
-        self._log_clear()
         self._log_write(f"[COMET] Config written → {cfg}\n")
         self._log_write(f"[COMET] Run folder     → {run_dir}\n\n")
 
