@@ -650,7 +650,13 @@ class CometLauncherApp(tk.Tk):
         env["RUN_DIR"]        = docker_run_dir   # drive-letter path for Docker
         env["STREAMLIT_PORT"] = str(port)
 
-        cmd = ["docker", "compose", "-f", COMPOSE_FILE, "up", "--build"]
+        # --exit-code-from makes docker compose return the container's exit code.
+        # Without it, docker compose up always returns 0 even if the container fails.
+        cmd = [
+            "docker", "compose", "-f", COMPOSE_FILE,
+            "up", "--build",
+            "--exit-code-from", "comet_pipeline",
+        ]
 
         try:
             self._process = subprocess.Popen(
@@ -704,9 +710,15 @@ class CometLauncherApp(tk.Tk):
                 self._log_write("\n[COMET] Pipeline finished successfully.\n")
                 messagebox.showinfo("Done", "The COMET pipeline completed successfully!")
             elif retcode is not None:
-                self._log_write(
-                    f"\n[COMET] Pipeline exited with code {retcode}.\n"
+                msg = (
+                    f"\n[COMET] ✖  Pipeline failed (exit code {retcode}).\n"
                     "Check the log above for details.\n"
+                )
+                self._log_write(msg)
+                messagebox.showerror(
+                    "Pipeline failed",
+                    f"The COMET pipeline exited with code {retcode}.\n\n"
+                    "Check the Annotation Log for the full error message.",
                 )
 
         self.after(0, _ui)

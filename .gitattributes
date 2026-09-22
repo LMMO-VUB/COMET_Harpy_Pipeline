@@ -1,0 +1,13 @@
+# Ensure shell scripts always use LF line endings regardless of platform.
+# Without this, Windows git (core.autocrlf=true) converts LF→CRLF on checkout
+# and bash inside the Linux Docker container fails with "$'\r': command not found".
+*.sh    text eol=lf
+
+# Python files — LF preferred but not strictly required
+*.py    text eol=lf
+
+# Snakemake files
+Snakefile  text eol=lf
+
+# Everything else — let git decide
+*       text=auto
