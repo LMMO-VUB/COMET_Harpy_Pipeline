@@ -50,6 +50,19 @@ _DOCKER_DESKTOP_CANDIDATES = [
 
 DOCKER_READY_TIMEOUT = 120   # seconds to wait for Docker to become ready
 
+# ---------------------------------------------------------------------------
+# Theme palette  (Option B — Clean Light + Blue Accent)
+# ---------------------------------------------------------------------------
+T_BG       = "#f5f7fa"   # window / frame background
+T_FG       = "#1e2937"   # primary text
+T_ACCENT   = "#1a56db"   # blue — Launch button, focus rings
+T_BORDER   = "#c5d3e8"   # subtle blue-grey borders
+T_LF_LBL   = "#2c3e6b"   # LabelFrame heading colour
+T_HINT     = "#6b7a99"   # secondary / hint text
+T_RED      = "#d93025"   # Stop button
+T_TEAL     = "#0d9488"   # Open Portal button
+T_HDR      = "#1a3a5c"   # header bar
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -132,62 +145,135 @@ class CometLauncherApp(tk.Tk):
         super().__init__()
         self.title("COMET Pipeline Launcher")
         self.resizable(True, True)
-        self.minsize(720, 640)
+        self.minsize(740, 680)
 
         self._process: "subprocess.Popen | None" = None
         self._running = False
         self._browser_opened = False
         self._active_port = 8501
 
-        self._csv_var = tk.StringVar()
+        # StringVars created early so _apply_theme can't fail
+        self._csv_var  = tk.StringVar()
         self._name_var = tk.StringVar()
         self._out_var  = tk.StringVar()
 
+        self._apply_theme()
         self._build_ui()
         self._center_window()
 
-    # ── Layout ─────────────────────────────────────────────────────────────
+    # ── Theme ───────────────────────────────────────────────────────────────
+
+    def _apply_theme(self) -> None:
+        """Apply the Clean Light + Blue Accent visual theme (Option B)."""
+        self.configure(bg=T_BG)
+        s = ttk.Style(self)
+        # 'clam' gives the most cross-platform control over colours
+        s.theme_use("clam")
+
+        # Base elements
+        s.configure("TFrame",   background=T_BG)
+        s.configure("TLabel",   background=T_BG, foreground=T_FG,
+                    font=("Helvetica", 10))
+        s.configure("TEntry",   fieldbackground="white",
+                    bordercolor=T_BORDER, lightcolor=T_BORDER, darkcolor=T_BORDER,
+                    padding=4)
+        s.configure("TSpinbox", fieldbackground="white",
+                    bordercolor=T_BORDER, lightcolor=T_BORDER, darkcolor=T_BORDER,
+                    padding=4)
+        s.map("TEntry",   bordercolor=[("focus", T_ACCENT)])
+        s.map("TSpinbox", bordercolor=[("focus", T_ACCENT)])
+
+        # LabelFrame — slate-blue heading, light border
+        s.configure("TLabelframe",
+                    background=T_BG,
+                    bordercolor=T_BORDER,
+                    lightcolor=T_BORDER,
+                    darkcolor=T_BORDER,
+                    relief="solid",
+                    borderwidth=1)
+        s.configure("TLabelframe.Label",
+                    background=T_BG,
+                    foreground=T_LF_LBL,
+                    font=("Helvetica", 9, "bold"),
+                    padding=(4, 0))
+
+        # ── Custom button styles ─────────────────────────────────────────────
+        _btn_base = dict(borderwidth=0, focusthickness=2,
+                         focuscolor=T_BORDER, padding=(14, 7))
+
+        # Accent — blue (Launch)
+        s.configure("Accent.TButton", background=T_ACCENT, foreground="white",
+                    font=("Helvetica", 10, "bold"), **_btn_base)
+        s.map("Accent.TButton",
+              background=[("active", "#1648c4"), ("disabled", "#a8bfe8")],
+              foreground=[("disabled", "#dde5f5")])
+
+        # Danger — red (Stop)
+        s.configure("Danger.TButton", background=T_RED, foreground="white",
+                    font=("Helvetica", 10), **_btn_base)
+        s.map("Danger.TButton",
+              background=[("active", "#b52a20"), ("disabled", "#d0d0d0")],
+              foreground=[("disabled", "#a0a0a0")])
+
+        # Teal (Open Portal)
+        s.configure("Teal.TButton", background=T_TEAL, foreground="white",
+                    font=("Helvetica", 10), **_btn_base)
+        s.map("Teal.TButton",
+              background=[("active", "#0a7a70"), ("disabled", "#d0d0d0")],
+              foreground=[("disabled", "#a0a0a0")])
+
+        # Muted — secondary action (Browse buttons)
+        s.configure("Muted.TButton", background="#e2e8f0", foreground=T_FG,
+                    font=("Helvetica", 10), **_btn_base)
+        s.map("Muted.TButton",
+              background=[("active", "#cbd5e1"), ("disabled", "#e9ecef")])
+
+    # ── Layout ──────────────────────────────────────────────────────────────
 
     def _center_window(self) -> None:
         self.update_idletasks()
-        w = max(self.winfo_reqwidth(), 720)
-        h = max(self.winfo_reqheight(), 640)
+        w = max(self.winfo_reqwidth(), 740)
+        h = max(self.winfo_reqheight(), 680)
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"{w}x{h}+{x}+{y}")
 
     def _build_ui(self) -> None:
-        pad = dict(padx=12, pady=5)
+        row_pad = dict(padx=14, pady=6)
 
-        # ── Header ──────────────────────────────────────────────────────────
-        hdr = tk.Frame(self, bg="#1a3a5c")
+        # ── Header bar ──────────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=T_HDR)
         hdr.pack(fill="x")
+
         tk.Label(
             hdr,
             text="  COMET  Spatial Pipeline Launcher",
             font=("Helvetica", 15, "bold"),
-            fg="white", bg="#1a3a5c",
-        ).pack(side="left", padx=12, pady=9)
+            fg="white", bg=T_HDR,
+        ).pack(side="left", padx=14, pady=10)
 
-        # Docker status indicator
         self._docker_lbl = tk.Label(
-            hdr, text="⬤ Docker: checking…",
-            font=("Helvetica", 9), fg="#aaaaaa", bg="#1a3a5c",
+            hdr, text="⬤  Docker: checking…",
+            font=("Helvetica", 9), fg="#8aafd4", bg=T_HDR,
         )
-        self._docker_lbl.pack(side="right", padx=12)
+        self._docker_lbl.pack(side="right", padx=14)
 
-        # ── Main frame ──────────────────────────────────────────────────────
-        main = ttk.Frame(self, padding=12)
+        # ── Thin accent stripe under header ─────────────────────────────────
+        tk.Frame(self, bg=T_ACCENT, height=3).pack(fill="x")
+
+        # ── Scrollable main area ─────────────────────────────────────────────
+        main = ttk.Frame(self, padding=(14, 10))
         main.pack(fill="both", expand=True)
 
-        # ── Input CSV file ──────────────────────────────────────────────────
-        file_lf = ttk.LabelFrame(main, text="Input Data File", padding=8)
-        file_lf.pack(fill="x", **pad)
+        # ── Input CSV file ───────────────────────────────────────────────────
+        file_lf = ttk.LabelFrame(main, text="Input Data File", padding=(10, 6))
+        file_lf.pack(fill="x", **row_pad)
 
-        ttk.Entry(file_lf, textvariable=self._csv_var, width=65).grid(
-            row=0, column=0, sticky="ew", padx=(0, 6)
+        ttk.Entry(file_lf, textvariable=self._csv_var).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8), ipady=2
         )
-        ttk.Button(file_lf, text="Browse…", command=self._browse_csv).grid(
+        ttk.Button(file_lf, text="Browse…",
+                   command=self._browse_csv, style="Muted.TButton").grid(
             row=0, column=1
         )
         file_lf.columnconfigure(0, weight=1)
@@ -195,32 +281,33 @@ class CometLauncherApp(tk.Tk):
         ttk.Label(
             file_lf,
             text="Select the HALO or Horizon per-cell CSV export for this run.",
-            foreground="gray",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+            foreground=T_HINT, font=("Helvetica", 9),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
 
-        # ── Project settings ────────────────────────────────────────────────
-        proj_lf = ttk.LabelFrame(main, text="Project", padding=8)
-        proj_lf.pack(fill="x", **pad)
+        # ── Project name ─────────────────────────────────────────────────────
+        proj_lf = ttk.LabelFrame(main, text="Project", padding=(10, 6))
+        proj_lf.pack(fill="x", **row_pad)
 
         ttk.Label(proj_lf, text="Project name:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(proj_lf, textvariable=self._name_var, width=42).grid(
-            row=0, column=1, sticky="ew", padx=(8, 0)
+        ttk.Entry(proj_lf, textvariable=self._name_var).grid(
+            row=0, column=1, sticky="ew", padx=(10, 0), ipady=2
         )
         ttk.Label(
             proj_lf,
-            text="Auto-filled from filename — edit freely.",
-            foreground="gray",
-        ).grid(row=1, column=1, sticky="w", pady=(1, 0))
+            text="Auto-filled from the filename — edit freely.",
+            foreground=T_HINT, font=("Helvetica", 9),
+        ).grid(row=1, column=1, sticky="w", pady=(3, 0))
         proj_lf.columnconfigure(1, weight=1)
 
-        # ── Output folder ───────────────────────────────────────────────────
-        out_lf = ttk.LabelFrame(main, text="Output Folder", padding=8)
-        out_lf.pack(fill="x", **pad)
+        # ── Output folder ────────────────────────────────────────────────────
+        out_lf = ttk.LabelFrame(main, text="Output Folder", padding=(10, 6))
+        out_lf.pack(fill="x", **row_pad)
 
-        ttk.Entry(out_lf, textvariable=self._out_var, width=65).grid(
-            row=0, column=0, sticky="ew", padx=(0, 6)
+        ttk.Entry(out_lf, textvariable=self._out_var).grid(
+            row=0, column=0, sticky="ew", padx=(0, 8), ipady=2
         )
-        ttk.Button(out_lf, text="Browse…", command=self._browse_out).grid(
+        ttk.Button(out_lf, text="Browse…",
+                   command=self._browse_out, style="Muted.TButton").grid(
             row=0, column=1
         )
         out_lf.columnconfigure(0, weight=1)
@@ -228,108 +315,111 @@ class CometLauncherApp(tk.Tk):
         ttk.Label(
             out_lf,
             text="Results folder will be created here. Defaults to the same folder as the CSV.",
-            foreground="gray",
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+            foreground=T_HINT, font=("Helvetica", 9),
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(3, 0))
 
-        # ── Pipeline parameters ─────────────────────────────────────────────
-        param_lf = ttk.LabelFrame(main, text="Pipeline Parameters", padding=8)
-        param_lf.pack(fill="x", **pad)
+        # ── Pipeline parameters ──────────────────────────────────────────────
+        param_lf = ttk.LabelFrame(main, text="Pipeline Parameters", padding=(10, 6))
+        param_lf.pack(fill="x", **row_pad)
 
-        ttk.Label(param_lf, text="PCA dimensions:").grid(row=0, column=0, sticky="w")
+        # Row 0 — PCA dims
+        ttk.Label(param_lf, text="PCA dimensions:").grid(
+            row=0, column=0, sticky="w")
         self._pca_var = tk.IntVar(value=8)
         ttk.Spinbox(
             param_lf, from_=1, to=50, textvariable=self._pca_var, width=7
-        ).grid(row=0, column=1, sticky="w", padx=(8, 16))
-        ttk.Label(
-            param_lf, text="5–15 is typical for 20–40 markers", foreground="gray",
-        ).grid(row=0, column=2, sticky="w")
+        ).grid(row=0, column=1, sticky="w", padx=(10, 16))
+        ttk.Label(param_lf, text="5–15 is typical for 20–40 markers",
+                  foreground=T_HINT, font=("Helvetica", 9)).grid(
+            row=0, column=2, sticky="w")
 
+        # Row 1 — Clustering resolution
         ttk.Label(param_lf, text="Clustering resolution:").grid(
-            row=1, column=0, sticky="w", pady=(6, 0)
-        )
+            row=1, column=0, sticky="w", pady=(8, 0))
         self._res_var = tk.StringVar(value="0.5")
         ttk.Entry(param_lf, textvariable=self._res_var, width=7).grid(
-            row=1, column=1, sticky="w", padx=(8, 16), pady=(6, 0)
-        )
-        ttk.Label(
-            param_lf,
-            text="Higher → more clusters.  Try 0.2 – 1.0",
-            foreground="gray",
-        ).grid(row=1, column=2, sticky="w", pady=(6, 0))
+            row=1, column=1, sticky="w", padx=(10, 16), pady=(8, 0), ipady=2)
+        ttk.Label(param_lf, text="Higher → more clusters.  Try 0.2 – 1.0",
+                  foreground=T_HINT, font=("Helvetica", 9)).grid(
+            row=1, column=2, sticky="w", pady=(8, 0))
 
+        # Row 2 — Port
         ttk.Label(param_lf, text="Annotation portal port:").grid(
-            row=2, column=0, sticky="w", pady=(6, 0)
-        )
+            row=2, column=0, sticky="w", pady=(8, 0))
         self._port_var = tk.IntVar(value=8501)
         ttk.Spinbox(
             param_lf, from_=1024, to=65535, textvariable=self._port_var, width=7
-        ).grid(row=2, column=1, sticky="w", padx=(8, 16), pady=(6, 0))
-        ttk.Label(
-            param_lf,
-            text="Change if 8501 is already in use on this PC",
-            foreground="gray",
-        ).grid(row=2, column=2, sticky="w", pady=(6, 0))
+        ).grid(row=2, column=1, sticky="w", padx=(10, 16), pady=(8, 0))
+        ttk.Label(param_lf, text="Change if 8501 is already in use on this PC",
+                  foreground=T_HINT, font=("Helvetica", 9)).grid(
+            row=2, column=2, sticky="w", pady=(8, 0))
 
         param_lf.columnconfigure(2, weight=1)
 
-        # ── Log ─────────────────────────────────────────────────────────────
-        log_lf = ttk.LabelFrame(main, text="Pipeline Log", padding=8)
-        log_lf.pack(fill="both", expand=True, **pad)
+        # ── Pipeline log ─────────────────────────────────────────────────────
+        log_lf = ttk.LabelFrame(main, text="Pipeline Log", padding=(10, 6))
+        log_lf.pack(fill="both", expand=True, **row_pad)
 
         self._log = scrolledtext.ScrolledText(
             log_lf,
-            height=14,
+            height=12,
             state="disabled",
             font=("Consolas", 11),
             wrap="word",
-            bg="#1e1e1e",
-            fg="#d4d4d4",
-            insertbackground="#d4d4d4",
+            bg="#1e2637",
+            fg="#cdd6f4",
+            insertbackground="#cdd6f4",
             cursor="arrow",
+            selectbackground="#3d5a9e",
+            selectforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=8,
+            pady=6,
         )
         self._log.pack(fill="both", expand=True)
 
-        # ── Buttons ─────────────────────────────────────────────────────────
+        # ── Button row ───────────────────────────────────────────────────────
         btn_frame = ttk.Frame(main)
-        btn_frame.pack(fill="x", pady=(6, 2))
+        btn_frame.pack(fill="x", pady=(8, 4))
 
         self._launch_btn = ttk.Button(
-            btn_frame, text="▶  Launch Pipeline", command=self._on_launch
+            btn_frame, text="▶  Launch Pipeline",
+            command=self._on_launch, style="Accent.TButton",
         )
         self._launch_btn.pack(side="left", padx=(0, 8))
 
         self._stop_btn = ttk.Button(
-            btn_frame, text="■  Stop", command=self._on_stop, state="disabled"
+            btn_frame, text="■  Stop",
+            command=self._on_stop, style="Danger.TButton", state="disabled",
         )
         self._stop_btn.pack(side="left")
 
         self._portal_btn = ttk.Button(
-            btn_frame,
-            text="🌐  Open Annotation Portal",
-            command=self._open_portal,
-            state="disabled",
+            btn_frame, text="🌐  Open Annotation Portal",
+            command=self._open_portal, style="Teal.TButton", state="disabled",
         )
         self._portal_btn.pack(side="right")
 
-        # Trace CSV path changes → auto-fill project name
+        # Trace CSV path changes → auto-fill project name + output folder
         self._csv_var.trace_add("write", self._on_csv_change)
 
         # Check Docker status in the background on startup
         threading.Thread(target=self._check_docker_status, daemon=True).start()
 
-    # ── Docker status check on startup ─────────────────────────────────────
+    # ── Docker status check on startup ──────────────────────────────────────
 
     def _check_docker_status(self) -> None:
         if _docker_is_running():
             self.after(0, lambda: self._docker_lbl.configure(
-                text="⬤ Docker: running", fg="#5fba7d"
+                text="⬤  Docker: running", fg="#5fba7d"
             ))
         else:
             self.after(0, lambda: self._docker_lbl.configure(
-                text="⬤ Docker: not running", fg="#e06c75"
+                text="⬤  Docker: not running", fg="#e06c75"
             ))
 
-    # ── Event handlers ──────────────────────────────────────────────────────
+    # ── Event handlers ───────────────────────────────────────────────────────
 
     def _on_csv_change(self, *_) -> None:
         path = self._csv_var.get()
@@ -391,7 +481,7 @@ class CometLauncherApp(tk.Tk):
             return
 
         # Determine run / output folder
-        csv_abs = os.path.abspath(csv_path)
+        csv_abs    = os.path.abspath(csv_path)
         out_folder = self._out_var.get().strip()
         if not out_folder:
             out_folder = os.path.dirname(csv_abs)
@@ -399,12 +489,12 @@ class CometLauncherApp(tk.Tk):
         run_dir = out_folder
         os.makedirs(run_dir, exist_ok=True)
 
-        # If the CSV lives somewhere else, copy it into the output folder so
-        # Docker can see it under /data (the mounted run_dir).
-        csv_in_run = os.path.join(run_dir, os.path.basename(csv_abs))
-        needs_copy = os.path.abspath(csv_in_run) != csv_abs
+        # If the CSV lives elsewhere, copy it so Docker can see it under /data
+        csv_in_run  = os.path.join(run_dir, os.path.basename(csv_abs))
+        needs_copy  = os.path.abspath(csv_in_run) != csv_abs
 
         self._log_clear()
+
         if needs_copy:
             self._log_write(
                 f"[COMET] Copying data file to output folder…\n"
@@ -417,6 +507,7 @@ class CometLauncherApp(tk.Tk):
             except OSError as exc:
                 messagebox.showerror("File copy failed", str(exc))
                 return
+
         csv_filename = os.path.basename(csv_abs)
 
         try:
@@ -453,14 +544,14 @@ class CometLauncherApp(tk.Tk):
     def _open_portal(self) -> None:
         webbrowser.open(f"http://localhost:{self._active_port}")
 
-    # ── Docker thread ───────────────────────────────────────────────────────
+    # ── Docker thread ────────────────────────────────────────────────────────
 
     def _docker_thread(self, run_dir: str, port: int) -> None:
         # ── Step 1: ensure Docker is running ────────────────────────────────
         if not _docker_is_running():
             self._log_write("[COMET] Docker is not running — starting Docker Desktop…\n")
             self.after(0, lambda: self._docker_lbl.configure(
-                text="⬤ Docker: starting…", fg="#e5c07b"
+                text="⬤  Docker: starting…", fg="#e5c07b"
             ))
 
             exe = _find_docker_desktop()
@@ -480,7 +571,6 @@ class CometLauncherApp(tk.Tk):
                 self._finish(None)
                 return
 
-            # Poll until Docker daemon responds
             self._log_write("[COMET] Waiting for Docker to be ready")
             deadline = time.time() + DOCKER_READY_TIMEOUT
             ready = False
@@ -502,7 +592,7 @@ class CometLauncherApp(tk.Tk):
 
             self._log_write("\n[COMET] Docker is ready.\n\n")
             self.after(0, lambda: self._docker_lbl.configure(
-                text="⬤ Docker: running", fg="#5fba7d"
+                text="⬤  Docker: running", fg="#5fba7d"
             ))
 
         # ── Step 2: run the pipeline ─────────────────────────────────────────
@@ -557,7 +647,6 @@ class CometLauncherApp(tk.Tk):
     def _finish(self, retcode: "int | None") -> None:
         self._running = False
         self._process = None
-        # Re-check Docker status after pipeline ends
         threading.Thread(target=self._check_docker_status, daemon=True).start()
 
         def _ui() -> None:
@@ -574,7 +663,7 @@ class CometLauncherApp(tk.Tk):
 
         self.after(0, _ui)
 
-    # ── Log helpers ─────────────────────────────────────────────────────────
+    # ── Log helpers ──────────────────────────────────────────────────────────
 
     def _log_write(self, text: str) -> None:
         def _do():
