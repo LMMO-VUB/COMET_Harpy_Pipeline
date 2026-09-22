@@ -4,15 +4,21 @@ services:
     container_name: comet_pipeline
     volumes:
       # Pipeline code: the git repository itself, read-only inside the container.
-      # Update by running "git pull" in the pipeline folder — no rebuild needed.
+      # Update by running "git pull" in the pipeline folder -- no rebuild needed.
       - .:/pipeline:ro
 
       # Researcher's run folder: inputs in, results out.
       # RUN_DIR is set by the GUI launcher (launch_pipeline_gui.py) before this runs.
       - ${RUN_DIR}:/data
 
-    # Streamlit annotation portal — port is configurable via the GUI.
+    # Streamlit annotation portal -- port is configurable via the GUI.
     ports:
       - "${STREAMLIT_PORT:-8501}:${STREAMLIT_PORT:-8501}"
 
-    entrypoint: ["bash", "/pipeline/entrypoint.sh"]
+    # Inline command avoids shell-script line-ending issues on Windows.
+    # Seeds metadata_markers.csv into /data if absent, then runs Snakemake
+    # with /data as working directory so all relative config paths resolve there.
+    entrypoint:
+      - "bash"
+      - "-c"
+      - "set -e && echo '[entrypoint] Pipeline: /pipeline  Data: /data' && if [ ! -f /data/metadata_markers.csv ] && [ -f /pipeline/metadata_markers.csv ]; then echo '[entrypoint] Copying metadata_markers.csv...'; cp /pipeline/metadata_markers.csv /data/metadata_markers.csv; fi && echo '[entrypoint] Starting Snakemake...' && exec snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --cores all --rerun-incomplete"
