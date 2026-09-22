@@ -470,14 +470,18 @@ rule process_halo:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 2048,
+			chunks       = 4096,
 			overwrite    = True,
 		)
+		print("Rasterization complete.")
+		sys.stdout.flush()
 
 		sdata.table = TableModel.parse(
 			adata,
@@ -720,14 +724,18 @@ rule post_annotation_viz:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 2048,
+			chunks       = 4096,
 			overwrite    = True,
 		)
+		print("Rasterization complete.")
+		sys.stdout.flush()
 
 		if "spatialdata_attrs" in adata.uns:
 			del adata.uns["spatialdata_attrs"]
