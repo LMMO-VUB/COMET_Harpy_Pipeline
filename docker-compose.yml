@@ -15,6 +15,12 @@ services:
     ports:
       - "${STREAMLIT_PORT:-8501}:${STREAMLIT_PORT:-8501}"
 
+    environment:
+      # Force Python to flush stdout/stderr immediately so progress lines
+      # (PCA, clustering, etc.) appear in the log as they happen, not after
+      # the entire step finishes.
+      - PYTHONUNBUFFERED=1
+
     # Inline command avoids shell-script line-ending issues on Windows.
     # Seeds metadata_markers.csv into /data if absent, then runs Snakemake
     # with /data as working directory so all relative config paths resolve there.
