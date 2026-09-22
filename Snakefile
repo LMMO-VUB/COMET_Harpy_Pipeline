@@ -13,6 +13,7 @@ HALO_data_file        = config["HALO_data_file"]
 output_directory      = config["output_directory"]
 pca_dims              = int(config["pca_dims"])
 clustering_resolution = float(config["clustering_resolution"])
+streamlit_port        = int(config.get("streamlit_port", 8501))
 
 # Absolute path to the pipeline folder (where this Snakefile lives).
 # Passed into run: blocks so app.py is always found, whether running inside
@@ -120,8 +121,44 @@ rule process_halo:
 			for _s in (",", ";", "\t"):
 				try:
 					_c = pd.read_csv(path, sep=_s, decimal=",", encoding=enc, index_col=False)
-					if _c.shape[1] >= 5 and not any("¬" in str(col) for col in _c.columns):
-						return _c
+					if _c.shape[1] < 5 or any("¬" in str(col) for col in _c.columns):
+						continue
+					# Detect Horizon's unlabelled leading row-index column.
+					# Horizon exports prepend 0,1,2,3… to data rows without a
+					# matching header label, shifting every column one to the
+					# right.  Symptom: first column is exactly 0,1,2,… integers.
+					if _c.shape[0] >= 3:
+						try:
+							_fv = pd.to_numeric(_c.iloc[:, 0], errors="raise").astype(int)
+							_is_seq = (
+								int(_fv.iloc[0]) == 0
+								and bool((_fv.diff().dropna() == 1).all())
+							)
+							if _is_seq:
+								_first_name = str(_c.columns[0])
+								_is_unnamed = (
+									_first_name == ""
+									or _first_name.startswith("Unnamed:")
+								)
+								if _is_unnamed:
+									# File has a leading comma in the header so pandas
+									# already created an empty "Unnamed: 0" column for the
+									# row index.  No column shift — just drop the stub.
+									_c = _c.drop(columns=[_c.columns[0]]).reset_index(drop=True)
+								else:
+									# True shift: data has N+1 fields but header only N
+									# columns (no leading comma in header).  Re-read with
+									# an explicit name so every data field gets a label.
+									_cols = _c.columns.tolist()
+									_c = pd.read_csv(
+										path, sep=_s, decimal=",", encoding=enc,
+										header=None, skiprows=1,
+										names=["__row_idx__"] + _cols,
+									)
+									_c = _c.drop("__row_idx__", axis=1).reset_index(drop=True)
+						except (ValueError, TypeError):
+							pass  # first column is not numeric — no shift issue
+					return _c
 				except Exception:
 					pass
 			return None
@@ -186,7 +223,7 @@ rule process_halo:
 		df.columns = [_norm(c) for c in df.columns]
 
 		# ── 3. Load & validate metadata_markers.csv ───────────────────────────
-		markers_df = pd.read_csv(input.meta, index_col=False, skiprows=[0, 1])
+		markers_df = pd.read_csv(input.meta, index_col=False, skiprows=[0, 1], keep_default_na=False, na_values=[""])
 		markers_df.columns = [c.strip() for c in markers_df.columns]
 		for _col in markers_df.select_dtypes(include="object").columns:
 			markers_df[_col] = markers_df[_col].str.strip()
@@ -223,13 +260,15 @@ rule process_halo:
 			df["Object_Id_Clean"] = df["Object Id"].astype(int) + 1
 			df["cell_area_um2"]   = df["Cell Area (μm2)"]
 
-		elif _horizon_cols.issubset(df.columns) and any(c.startswith("Nuclei/") for c in df.columns):
+		elif _horizon_cols.issubset(df.columns) and any(c.startswith("Nuclei/") or c.startswith("Cells/") for c in df.columns):
 			input_format = "HORIZON"
-			df["x"]               = pd.to_numeric(df["Nuclei/X Position in μm"], errors="coerce")
-			df["y"]               = pd.to_numeric(df["Nuclei/Y Position in μm"], errors="coerce")
+			# Determine whether this export uses Cells/ or Nuclei/ column prefix
+			_hz_pfx = "Cells" if any(c.startswith("Cells/") for c in df.columns) else "Nuclei"
+			df["x"]               = pd.to_numeric(df[f"{_hz_pfx}/X Position in μm"], errors="coerce")
+			df["y"]               = pd.to_numeric(df[f"{_hz_pfx}/Y Position in μm"], errors="coerce")
 			# Annotation Index resets per ROI — use global row numbers for a unique id
 			df["Object_Id_Clean"] = np.arange(1, len(df) + 1)
-			df["cell_area_um2"]   = pd.to_numeric(df["Nuclei/Area in μm2"], errors="coerce")
+			df["cell_area_um2"]   = pd.to_numeric(df[f"{_hz_pfx}/Area in μm2"], errors="coerce")
 
 		else:
 			raise ValueError(
@@ -261,7 +300,7 @@ rule process_halo:
 			Horizon:      'Nuclei/Mean Intensity (CD3_500x - TRITC Protein Autofluo)'
 			"""
 			esc      = re.escape(channel)
-			dilution = r"(?:_\d+(?:\s?\d+)?x)?"   # optional _500x / _20 000x
+			dilution = r"(?:_\d+(?:\s?\d+)?x?)?"  # optional _500x / _20 000x / _200 (x optional)
 
 			if fmt == "HALO":
 				if col_type in ("Protein", "Other"):
@@ -276,11 +315,27 @@ rule process_halo:
 						re.IGNORECASE,
 					)
 			else:  # HORIZON
-				kind = "RNA" if col_type == "Transcript" else "Protein"
-				pat = re.compile(
-					r"Nuclei/Mean Intensity\s*\(" + esc + dilution + r"\s*-\s*\w+\s+" + kind + r"\s+Autofluo\)$",
-					re.IGNORECASE,
-				)
+				if col_type == "Transcript":
+					# RNA cols carry T\d+ prefix: 'Cells/Mean Intensity (T1 PTGES - FITC RNA autofluo)'
+					pat = re.compile(
+						r"(?:Nuclei|Cells)/Mean Intensity\s*\(T\d+\s+" + esc + dilution + r"\s*-\s*\w+\s+RNA\s+[Aa]utofluo\)$",
+						re.IGNORECASE,
+					)
+				elif col_type == "Other":
+					# Simple stains like DAPI: 'Cells/Mean Intensity (DAPI)'
+					pat = re.compile(
+						r"(?:Nuclei|Cells)/Mean Intensity\s*\(" + esc + r"\)$",
+						re.IGNORECASE,
+					)
+				else:  # Protein
+					# Matches with or without "Protein" keyword and with optional
+					# reimaging suffix: (DeltaNP63_500x - TRITC Protein Autofluo)
+					# or (P40_500x - TRITC autofluo) or (CD3_500x (1) - TRITC autofluo)
+					pat = re.compile(
+						r"(?:Nuclei|Cells)/Mean Intensity\s*\(" + esc + dilution
+						+ r"(?:\s*\(\d+\))?\s*-\s*\w+(?:\s+Protein)?\s+[Aa]utofluo\)$",
+						re.IGNORECASE,
+					)
 
 			# If a marker appears in multiple cycles, keep the last (highest cycle)
 			matches = sorted(c for c in columns if pat.search(c))
@@ -335,6 +390,74 @@ rule process_halo:
 		adata.obs["cell_area_um2"] = df["cell_area_um2"].values
 		adata.obsm["spatial"]      = df[["x", "y"]].values.astype(np.float32)
 		adata.var["feature_type"]  = adata.var["type"]
+
+		# ── 6b. Carry non-intensity columns forward as obs metadata ──────────
+		# Everything in the original CSV that is not an intensity/count
+		# measurement (i.e. not in matched_columns) gets stored in adata.obs
+		# so it is preserved in the .h5ad and automatically appears in the
+		# Seurat @meta.data without any extra R-side work.
+		# This includes: positivity/threshold calls, morphology columns
+		# (area, roundness, perimeter), sample/ROI identifiers, bounding-box
+		# coordinates, and any pre-existing clustering or classification columns
+		# that Horizon may have exported alongside the raw intensities.
+		_obs_skip = set(matched_columns) | {
+			"Object_Id_Clean",
+			"x", "y",                   # added to adata.obs directly
+			"cell_area_um2",             # added to adata.obs directly
+			"cell_area_px", "radius_px", # derived; not needed in metadata
+		}
+		if input_format == "HALO":
+			_obs_skip.add("Object Id")       # already captured as instance_id
+		else:
+			_obs_skip.add("Annotation Index") # already captured as Object_Id_Clean
+
+		_extra_cols = [
+			c for c in df.columns
+			if c not in _obs_skip
+			and str(c).strip()               # skip blank column names
+			and not str(c).startswith("Unnamed:")  # skip pandas auto-index cols
+		]
+
+		# SpatialData requires obs column names to contain only
+		# [A-Za-z0-9_.-].  Sanitize every name and resolve any
+		# collisions that arise after sanitization.
+		def _sanitize_col(name):
+			import re as _re
+			safe = str(name)
+			# Convert μ (Greek mu U+03BC) and µ (micro sign U+00B5) to u
+			# so "μm" and "µm" become "um" rather than being dropped
+			safe = safe.replace("\u03bc", "u").replace("\u00b5", "u")
+			safe = _re.sub(r"[^A-Za-z0-9_.\-]", "_", safe)
+			safe = _re.sub(r"_+", "_", safe).strip("_")
+			return safe or "col"
+
+		# Prefix every imported column with the source format so that:
+		#   (a) it is immediately clear in downstream analysis which columns
+		#       came from the raw export vs. the pipeline (e.g.
+		#       horizon_Leiden_clusters  vs.  leiden_clusters)
+		#   (b) case-insensitive collisions with pipeline columns are
+		#       structurally impossible without needing a reserved-name list.
+		_fmt_prefix       = "horizon" if input_format == "HORIZON" else "halo"
+		_used_names       = set(adata.obs.columns)
+		_used_names_lower = {n.lower() for n in _used_names}
+		_added = 0
+		for _col in _extra_cols:
+			_safe = "{}_{}".format(_fmt_prefix, _sanitize_col(_col))
+			# Safety net: resolve any residual collision case-insensitively
+			if _safe.lower() in _used_names_lower:
+				_n = 2
+				while "{}_{}".format(_safe, _n).lower() in _used_names_lower:
+					_n += 1
+				_safe = "{}_{}".format(_safe, _n)
+			try:
+				adata.obs[_safe] = df[_col].values
+				_used_names.add(_safe)
+				_used_names_lower.add(_safe.lower())
+				_added += 1
+			except Exception:
+				pass
+
+		print("Added {} extra metadata columns to obs.".format(_added))
 
 		# ── 7. Build SpatialData ──────────────────────────────────────────────
 		sdata    = sd.SpatialData()
@@ -525,7 +648,7 @@ rule annotate_clusters:
 		cmd = [
 			"streamlit", "run", app_path,
 			"--server.address=0.0.0.0",
-			"--server.port=8501",
+			"--server.port={}".format(streamlit_port),
 			"--server.headless=true",
 			"--",
 			"--input",   input.h5ad,
@@ -651,6 +774,10 @@ rule convert_to_seurat:
 		tmp_prefix = "{}/tmp_transfer".format(output_directory)
 		expr_path  = "{}_expr.csv".format(tmp_prefix)
 		meta_path  = "{}_metadata.csv".format(tmp_prefix)
+		var_path   = "{}_var.csv".format(tmp_prefix)
+		norm_path  = "{}_norm.csv".format(tmp_prefix)
+		pca_path   = "{}_pca.csv".format(tmp_prefix)
+		umap_path  = "{}_umap.csv".format(tmp_prefix)
 
 		if scipy.sparse.issparse(adata.X):
 			expr_df = pd.DataFrame(
@@ -661,24 +788,110 @@ rule convert_to_seurat:
 				adata.X, index=adata.obs_names, columns=adata.var_names
 			)
 
-		expr_df.T.to_csv(expr_path)
+		# Export raw intensities (counts) and normalised values (data layer).
+		# adata.X here is z-scored — exporting that as "counts" caused negative
+		# nCount_Protein values and broke FeaturePlot.  Use the stored layers.
+		def _layer_df(matrix, obs, var):
+			if scipy.sparse.issparse(matrix):
+				matrix = matrix.toarray()
+			return pd.DataFrame(matrix, index=obs, columns=var)
+
+		_layer_df(adata.layers["raw"],        adata.obs_names, adata.var_names).T.to_csv(expr_path)
+		_layer_df(adata.layers["normalized"], adata.obs_names, adata.var_names).T.to_csv(norm_path)
 		adata.obs.to_csv(meta_path)
+		adata.var[["feature_type"]].to_csv(var_path)
+
+		# Export dimensionality reductions so Seurat gets proper PCA / UMAP slots
+		if "X_pca" in adata.obsm:
+			pca_df = pd.DataFrame(
+				adata.obsm["X_pca"],
+				index   = adata.obs_names,
+				columns = ["PC_{}".format(i + 1) for i in range(adata.obsm["X_pca"].shape[1])],
+			)
+			pca_df.to_csv(pca_path)
+
+		if "X_umap" in adata.obsm:
+			umap_df = pd.DataFrame(
+				adata.obsm["X_umap"],
+				index   = adata.obs_names,
+				columns = ["UMAP_1", "UMAP_2"],
+			)
+			umap_df.to_csv(umap_path)
 
 		r_script = """
 library(Seurat)
 
-counts   <- read.csv('{expr}', row.names=1, check.names=FALSE)
+# ── Load expression, metadata, and feature-type labels ────────────────────
+counts   <- read.csv('{expr}', row.names=1, check.names=FALSE)  # raw intensities
+norm_dat <- read.csv('{norm}', row.names=1, check.names=FALSE)  # arcsinh/log1p
 metadata <- read.csv('{meta}', row.names=1, check.names=FALSE)
+var_meta <- read.csv('{var}',  row.names=1, check.names=FALSE)
 
-counts_sparse <- as(as.matrix(counts), "dgCMatrix")
-seurat_obj    <- CreateSeuratObject(counts = counts_sparse, meta.data = metadata)
+# ── Split features by type ─────────────────────────────────────────────────
+protein_features    <- rownames(var_meta)[var_meta$feature_type %in% c("Protein", "Other")]
+transcript_features <- rownames(var_meta)[var_meta$feature_type == "Transcript"]
+
+protein_mat  <- as(as.matrix(counts[protein_features, , drop=FALSE]), "dgCMatrix")
+protein_norm <- as(as.matrix(norm_dat[protein_features, , drop=FALSE]), "dgCMatrix")
+
+# ── Build Seurat object with Protein as primary assay ─────────────────────
+seurat_obj <- CreateSeuratObject(
+    counts    = protein_mat,
+    assay     = "Protein",
+    meta.data = metadata
+)
+seurat_obj[["Protein"]] <- SetAssayData(
+    object   = seurat_obj[["Protein"]],
+    layer    = "data",
+    new.data = protein_norm
+)
+
+# ── Add Transcript assay when RNA markers are present ─────────────────────
+if (length(transcript_features) > 0) {{
+    transcript_mat <- as(as.matrix(counts[transcript_features, , drop=FALSE]), "dgCMatrix")
+    transcript_norm <- as(as.matrix(norm_dat[transcript_features, , drop=FALSE]), "dgCMatrix")
+    seurat_obj[["Transcript"]] <- CreateAssayObject(counts = transcript_mat)
+    seurat_obj[["Transcript"]] <- SetAssayData(
+        object   = seurat_obj[["Transcript"]],
+        layer    = "data",
+        new.data = transcript_norm
+    )
+    cat(sprintf("Added Transcript assay: %d features\n", length(transcript_features)))
+}}
+
+# ── Add PCA reduction ──────────────────────────────────────────────────────
+if (file.exists('{pca}')) {{
+    pca_mat <- as.matrix(read.csv('{pca}', row.names=1, check.names=FALSE))
+    seurat_obj[["pca"]] <- CreateDimReducObject(
+        embeddings = pca_mat,
+        key        = "PC_",
+        assay      = "Protein"
+    )
+    cat(sprintf("Added PCA reduction:  %d dims\n", ncol(pca_mat)))
+}}
+
+# ── Add UMAP reduction ─────────────────────────────────────────────────────
+if (file.exists('{umap}')) {{
+    umap_mat <- as.matrix(read.csv('{umap}', row.names=1, check.names=FALSE))
+    seurat_obj[["umap"]] <- CreateDimReducObject(
+        embeddings = umap_mat,
+        key        = "UMAP_",
+        assay      = "Protein"
+    )
+    cat(sprintf("Added UMAP reduction: %d dims\n", ncol(umap_mat)))
+}}
+
+cat(sprintf("Protein assay: %d features\n", length(protein_features)))
+cat(sprintf("Cells:         %d\n", ncol(seurat_obj)))
 
 if ('cell_type' %in% colnames(seurat_obj@meta.data)) {{
     Idents(seurat_obj) <- 'cell_type'
 }}
 
+DefaultAssay(seurat_obj) <- "Protein"
 saveRDS(seurat_obj, file = '{rds}')
-""".format(expr=expr_path, meta=meta_path, rds=output.rds)
+""".format(expr=expr_path, norm=norm_path, meta=meta_path, var=var_path,
+           pca=pca_path, umap=umap_path, rds=output.rds)
 
 		r_script_path = "{}_generator.R".format(tmp_prefix)
 		with open(r_script_path, "w") as _fh:
@@ -686,7 +899,7 @@ saveRDS(seurat_obj, file = '{rds}')
 
 		subprocess.run(["Rscript", r_script_path], check=True)
 
-		for _f in [expr_path, meta_path, r_script_path]:
+		for _f in [expr_path, norm_path, meta_path, var_path, pca_path, umap_path, r_script_path]:
 			if os.path.exists(_f):
 				os.remove(_f)
 

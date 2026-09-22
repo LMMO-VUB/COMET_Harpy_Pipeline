@@ -59,14 +59,7 @@ CANDIDATE_ENCODINGS = ["utf-8-sig", "cp1252", "latin-1"]
 
 
 def get_delimiter(sample_line):
-    tabs   = sample_line.count("\t")
-    semis  = sample_line.count(";")
-    commas = sample_line.count(",")
-    if tabs >= semis and tabs >= commas:
-        return "\t"
-    if semis > commas:
-        return ";"
-    return ","
+    return "\t" if sample_line.count("\t") > sample_line.count(",") else ","
 
 
 def read_header(path):
@@ -109,17 +102,29 @@ HALO_TRANSCRIPT_RE = re.compile(
     r"(Copies|Area.*|Classification|Cell Intensity|Avg Intensity)$"
 )
 
-# Horizon per-nucleus export, e.g.:
-#   "Nuclei/Mean Intensity (CD3_500x - TRITC Protein Autofluo)"
+# Horizon per-cell/nucleus export — handles both Cells/ and Nuclei/ prefixes
+# and captures molecule type to auto-detect RNA transcripts.
+# Examples:
+#   "Cells/Mean Intensity (T1 PTGES - FITC RNA autofluo)"  <- transcript
+#   "Cells/Mean Intensity (CD3_500x - TRITC Protein Autofluo)"  <- protein
 HORIZON_RE = re.compile(
-    r"Nuclei/Mean Intensity \((?P<marker>.+?)\s*-\s*\w+ (?:Protein|RNA) Autofluo\)"
+    r"(?:Nuclei|Cells)/Mean Intensity \((?P<marker>.+?)\s*-\s*\w+(?:\s+(?P<mol_type>Protein|RNA))?\s+[Aa]utofluo\)",
+    re.IGNORECASE,
 )
 
-DILUTION_SUFFIX_RE = re.compile(r"_\d+(?:\s?\d+)?x$", re.IGNORECASE)
+# Simple stains with no channel description, e.g. Cells/Mean Intensity (DAPI)
+HORIZON_SIMPLE_RE = re.compile(
+    r"(?:Nuclei|Cells)/Mean Intensity \((?P<marker>DAPI|HOECHST)\)",
+    re.IGNORECASE,
+)
+
+DILUTION_SUFFIX_RE = re.compile(r"_\d+(?:\s?\d+)?x?$", re.IGNORECASE)
 
 
 def strip_dilution(marker_raw):
     marker = marker_raw.replace("?", "a").replace("\u03b1", "a").strip()
+    # Strip reimaging suffix before dilution: "CD3_500x (1)" -> "CD3_500x"
+    marker = re.sub(r"\s*\(\d+\)\s*$", "", marker).strip()
     marker = DILUTION_SUFFIX_RE.sub("", marker)
     return marker.strip()
 
@@ -130,20 +135,43 @@ def detect_markers(header):
     fmt = None
 
     for col in header:
+        # HALO transcript: '1 | T2 AXL Copies'
         m = HALO_TRANSCRIPT_RE.match(col)
         if m:
             fmt = fmt or "HALO"
             markers[strip_dilution(m.group("marker"))] = True
             continue
+
+        # HALO protein/other intensity column
         m = HALO_INTENSITY_RE.match(col)
         if m:
             fmt = fmt or "HALO"
             markers.setdefault(strip_dilution(m.group("marker")), False)
             continue
+
+        # Horizon simple stain with no channel suffix, e.g. Cells/Mean Intensity (DAPI)
+        m = HORIZON_SIMPLE_RE.match(col)
+        if m:
+            fmt = fmt or "HORIZON"
+            markers.setdefault(m.group("marker"), False)
+            continue
+
+        # Horizon protein or RNA intensity column
         m = HORIZON_RE.search(col)
         if m:
             fmt = fmt or "HORIZON"
-            markers.setdefault(strip_dilution(m.group("marker")), False)
+            raw = m.group("marker").strip()
+            mol_type_str = m.group("mol_type")  # None when no keyword present
+            is_rna = (mol_type_str is not None and mol_type_str.upper() == "RNA")
+            if is_rna:
+                # Strip T\d+ cycle prefix: 'T1 PTGES' -> 'PTGES'
+                raw = re.sub(r"^T\d+\s+", "", raw)
+            # Skip autofluorescence control channels (e.g. "TRITC autofluo (1)")
+            if re.search(r"autofluo", raw, re.IGNORECASE):
+                continue
+            clean = strip_dilution(raw)
+            if clean:
+                markers.setdefault(clean, is_rna)
             continue
 
     return markers, fmt
@@ -177,11 +205,12 @@ def generate(input_csv, output_csv):
 
     if fmt == "HORIZON":
         print(
-            "[COMET] Detected Horizon export. The pipeline supports Horizon "
-            "format natively. Localizations for markers not in the known-marker "
-            "lookup will be defaulted to Nucleus (Horizon reports nuclei "
-            "intensities). Please review the generated metadata_markers.csv "
-            "before running the pipeline."
+            "WARNING: this looks like a Horizon export. generate_metadata.py can "
+            "list the markers it finds, but the Snakemake 'process_halo' rule "
+            "currently only knows how to parse HALO-format exports (columns like "
+            "'Object Id', 'XMin', 'Cell Area (\u00b5m\u00b2)'). Loading a Horizon file "
+            "into the rest of the pipeline as-is will fail -- talk to your pipeline "
+            "maintainer about adding Horizon support before proceeding."
         )
 
     rows = []
@@ -220,7 +249,7 @@ def generate(input_csv, output_csv):
     return rows, fmt
 
 
-# Alias expected by the Snakefile's parse-time import
+# Alias expected by the Snakefile
 generate_from_csv = generate
 
 
