@@ -600,15 +600,25 @@ rule process_halo:
 			plt.close()
 
 		print("Performing Neighborhood Enrichment Analysis")
-		import sys, numba
-		numba.set_num_threads(1)  # prevent deadlock inside Docker
+		import sys, squidpy as sq
+		from spatialdata.models import TableModel as _TM
 		sys.stdout.flush()
-		hp.tb.nhood_enrichment(
-			sdata,
-			labels_layer    = "halo_labels",
-			table_layer     = "table",
-			output_layer    = "table_score_genes_enrichment",
-			celltype_column = "leiden_clusters",
+		# Bypass hp.tb.nhood_enrichment — harpy does not expose numba_parallel,
+		# so call squidpy directly with numba_parallel=False to use a plain for-loop
+		# instead of numba prange, which deadlocks inside Docker/WSL2.
+		_adata_nhood = sdata.tables["table"].copy()
+		sq.gr.spatial_neighbors(_adata_nhood, coord_type="generic")
+		sq.gr.nhood_enrichment(
+			_adata_nhood,
+			cluster_key    = "leiden_clusters",
+			seed           = 0,
+			numba_parallel = False,
+		)
+		sdata.tables["table_score_genes_enrichment"] = _TM.parse(
+			_adata_nhood,
+			region       = "halo_labels",
+			region_key   = "region",
+			instance_key = "instance_id",
 		)
 		print("Neighborhood Enrichment done.")
 		sys.stdout.flush()
@@ -752,13 +762,29 @@ rule post_annotation_viz:
 			instance_key = "instance_id",
 		)
 
-		hp.tb.nhood_enrichment(
-			sdata,
-			labels_layer    = "halo_labels",
-			table_layer     = "table",
-			celltype_column = "cell_type",
-			output_layer    = "table_annotated_enrichment",
+		# Bypass hp.tb.nhood_enrichment — harpy does not expose numba_parallel,
+		# so call squidpy directly with numba_parallel=False to prevent deadlock
+		# inside Docker/WSL2.
+		import squidpy as sq
+		from spatialdata.models import TableModel as _TM
+		print("Performing Neighborhood Enrichment Analysis (post-annotation)")
+		import sys as _sys; _sys.stdout.flush()
+		_adata_nhood2 = sdata.tables["table"].copy()
+		sq.gr.spatial_neighbors(_adata_nhood2, coord_type="generic")
+		sq.gr.nhood_enrichment(
+			_adata_nhood2,
+			cluster_key    = "cell_type",
+			seed           = 0,
+			numba_parallel = False,
 		)
+		sdata.tables["table_annotated_enrichment"] = _TM.parse(
+			_adata_nhood2,
+			region       = "halo_labels",
+			region_key   = "region",
+			instance_key = "instance_id",
+		)
+		print("Neighborhood Enrichment done.")
+		_sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_annotated_enrichment",
