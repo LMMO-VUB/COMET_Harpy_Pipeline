@@ -453,6 +453,15 @@ class CometLauncherApp(tk.Tk):
             command=self._open_portal, style="Teal.TButton", state="disabled")
         self._portal_btn.pack(side="right")
 
+        # ── Status bar ──────────────────────────────────────────────────────
+        tk.Frame(self, bg=T_BORDER, height=1).pack(fill="x")
+        self._status_lbl = tk.Label(
+            self, text="",
+            font=("Helvetica", 10), fg=T_HINT, bg=T_BG,
+            anchor="w",
+        )
+        self._status_lbl.pack(fill="x", padx=16, pady=(5, 8))
+
         self._csv_var.trace_add("write", self._on_csv_change)
         threading.Thread(target=self._check_docker_status, daemon=True).start()
 
@@ -709,6 +718,8 @@ class CometLauncherApp(tk.Tk):
 
         # Step 2 — run the pipeline
         self._log_write("[COMET] Starting pipeline…\n\n")
+        self._set_status("⬤  Running…", "#e5c07b")
+        self.title("⬤  COMET Pipeline — Running")
 
         env = os.environ.copy()
         env["RUN_DIR"]        = docker_data_dir   # local path Docker can actually mount
@@ -760,7 +771,45 @@ class CometLauncherApp(tk.Tk):
                 webbrowser.open(url)
 
         retcode = self._process.wait()
+
+        # Copy results from the local staging folder back to the network drive.
+        # This must happen regardless of success/failure so partial results are
+        # preserved and researchers can inspect them.
+        if staging_dir:
+            self._log_write("\n[COMET] Copying results back to your output folder…\n")
+            self._set_status("⬤  Copying results to network drive…", "#e5c07b")
+            try:
+                copied, errors = 0, []
+                for item in os.listdir(staging_dir):
+                    src_path = os.path.join(staging_dir, item)
+                    dst_path = os.path.join(run_dir, item)
+                    try:
+                        if os.path.isdir(src_path):
+                            if os.path.exists(dst_path):
+                                shutil.rmtree(dst_path)
+                            shutil.copytree(src_path, dst_path)
+                        else:
+                            shutil.copy2(src_path, dst_path)
+                        copied += 1
+                    except Exception as item_exc:
+                        errors.append(f"{item}: {item_exc}")
+                if errors:
+                    self._log_write(
+                        f"[COMET] Warning: {len(errors)} item(s) could not be copied:\n"
+                        + "\n".join(f"  {e}" for e in errors) + "\n"
+                    )
+                self._log_write(
+                    f"[COMET] Results ({copied} item(s)) copied to:\n"
+                    f"        {run_dir}\n"
+                )
+            except Exception as exc:
+                self._log_write(f"[COMET] Warning: could not copy results: {exc}\n")
+
         self._finish(retcode)
+
+    def _set_status(self, text: str, color: str) -> None:
+        """Update the persistent status bar (thread-safe)."""
+        self.after(0, lambda: self._status_lbl.configure(text=text, fg=color))
 
     def _finish(self, retcode: "int | None") -> None:
         self._running = False
@@ -772,6 +821,13 @@ class CometLauncherApp(tk.Tk):
             self._stop_btn.configure(state="disabled")
             if retcode == 0:
                 self._log_write("\n[COMET] Pipeline finished successfully.\n")
+                self._set_status("✓  Completed successfully", "#5fba7d")
+                self.title("✓  COMET Pipeline — Done")
+                try:
+                    import winsound
+                    winsound.MessageBeep(winsound.MB_OK)
+                except Exception:
+                    pass
                 messagebox.showinfo("Done", "The COMET pipeline completed successfully!")
             elif retcode is not None:
                 msg = (
@@ -779,11 +835,25 @@ class CometLauncherApp(tk.Tk):
                     "Check the log above for details.\n"
                 )
                 self._log_write(msg)
+                self._set_status(
+                    f"✖  Failed (exit code {retcode}) — see log above for the error",
+                    T_RED,
+                )
+                self.title("✖  COMET Pipeline — Failed")
+                try:
+                    import winsound
+                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                except Exception:
+                    pass
                 messagebox.showerror(
                     "Pipeline failed",
                     f"The COMET pipeline exited with code {retcode}.\n\n"
                     "Check the Annotation Log for the full error message.",
                 )
+            else:
+                # User stopped
+                self._set_status("■  Stopped", T_HINT)
+                self.title("COMET Pipeline Launcher")
 
         self.after(0, _ui)
 
