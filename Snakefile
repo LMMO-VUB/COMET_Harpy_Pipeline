@@ -62,6 +62,66 @@ if not os.path.exists(metadata_file):
 
 
 ######################################
+### Pure-numpy neighborhood enrichment — completely bypasses numba/LLVM JIT,
+### which deadlocks inside Docker/WSL2 even with numba_parallel=False.
+### Compatible with squidpy's output format:
+###   adata.uns[f"{cluster_key}_nhood_enrichment"]["zscore"]   – float64 (n_clust x n_clust)
+###   adata.uns[f"{cluster_key}_nhood_enrichment"]["count"]    – int64   (n_clust x n_clust)
+######################################
+def _nhood_enrichment_numpy(adata, cluster_key, n_perms=1000, seed=0):
+    """
+    Drop-in replacement for sq.gr.nhood_enrichment that uses only numpy.
+    Requires adata.obsp["spatial_connectivities"] to already be populated
+    (call sq.gr.spatial_neighbors first).
+    """
+    import sys
+    import numpy as np
+    from scipy.sparse import issparse
+
+    print(f"[nhood_enrichment_numpy] building co-occurrence matrix …")
+    sys.stdout.flush()
+
+    labels_cat = adata.obs[cluster_key].astype("category")
+    cats        = labels_cat.cat.categories
+    n_clusters  = len(cats)
+    labels      = np.asarray(labels_cat.cat.codes, dtype=np.intp)
+
+    conn = adata.obsp.get("spatial_connectivities")
+    if conn is None:
+        raise KeyError("spatial_connectivities not found — run sq.gr.spatial_neighbors first")
+    if issparse(conn):
+        conn_csr = conn.tocsr()
+        rows, cols = conn_csr.nonzero()
+    else:
+        rows, cols = np.nonzero(conn)
+
+    # Observed co-occurrence
+    obs_count = np.zeros((n_clusters, n_clusters), dtype=np.int64)
+    np.add.at(obs_count, (labels[rows], labels[cols]), 1)
+
+    # Permutation baseline
+    rng = np.random.default_rng(seed)
+    perm_counts = np.zeros((n_perms, n_clusters, n_clusters), dtype=np.float64)
+    for i in range(n_perms):
+        perm = rng.permutation(labels)
+        pc = np.zeros((n_clusters, n_clusters), dtype=np.int64)
+        np.add.at(pc, (perm[rows], perm[cols]), 1)
+        perm_counts[i] = pc
+
+    mean   = perm_counts.mean(axis=0)
+    std    = perm_counts.std(axis=0)
+    zscore = (obs_count - mean) / (std + 1e-10)
+
+    adata.uns[f"{cluster_key}_nhood_enrichment"] = {
+        "zscore": zscore,
+        "count":  obs_count,
+    }
+
+    print(f"[nhood_enrichment_numpy] done ({n_clusters} clusters, {n_perms} permutations).")
+    sys.stdout.flush()
+    return adata
+
+######################################
 
 rule all:
 	input:
@@ -470,14 +530,18 @@ rule process_halo:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 2048,
+			chunks       = 4096,
 			overwrite    = True,
 		)
+		print("Rasterization complete.")
+		sys.stdout.flush()
 
 		sdata.table = TableModel.parse(
 			adata,
@@ -596,13 +660,25 @@ rule process_halo:
 			plt.close()
 
 		print("Performing Neighborhood Enrichment Analysis")
-		hp.tb.nhood_enrichment(
-			sdata,
-			labels_layer    = "halo_labels",
-			table_layer     = "table",
-			output_layer    = "table_score_genes_enrichment",
-			celltype_column = "leiden_clusters",
+		import sys, squidpy as sq
+		from spatialdata.models import TableModel as _TM
+		sys.stdout.flush()
+		# Use pure-numpy implementation — completely avoids numba/LLVM JIT which
+		# deadlocks inside Docker/WSL2 even with numba_parallel=False.
+		_adata_nhood = sdata.tables["table"].copy()
+		sq.gr.spatial_neighbors(_adata_nhood, coord_type="generic")
+		_nhood_enrichment_numpy(_adata_nhood, cluster_key="leiden_clusters", seed=0)
+		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
+		if "spatialdata_attrs" in _adata_nhood.uns:
+			del _adata_nhood.uns["spatialdata_attrs"]
+		sdata.tables["table_score_genes_enrichment"] = _TM.parse(
+			_adata_nhood,
+			region       = "halo_labels",
+			region_key   = "region",
+			instance_key = "instance_id",
 		)
+		print("Neighborhood Enrichment done.")
+		sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_score_genes_enrichment",
@@ -720,14 +796,18 @@ rule post_annotation_viz:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 2048,
+			chunks       = 4096,
 			overwrite    = True,
 		)
+		print("Rasterization complete.")
+		sys.stdout.flush()
 
 		if "spatialdata_attrs" in adata.uns:
 			del adata.uns["spatialdata_attrs"]
@@ -739,13 +819,26 @@ rule post_annotation_viz:
 			instance_key = "instance_id",
 		)
 
-		hp.tb.nhood_enrichment(
-			sdata,
-			labels_layer    = "halo_labels",
-			table_layer     = "table",
-			celltype_column = "cell_type",
-			output_layer    = "table_annotated_enrichment",
+		# Use pure-numpy implementation — completely avoids numba/LLVM JIT which
+		# deadlocks inside Docker/WSL2 even with numba_parallel=False.
+		import squidpy as sq
+		from spatialdata.models import TableModel as _TM
+		print("Performing Neighborhood Enrichment Analysis (post-annotation)")
+		import sys as _sys; _sys.stdout.flush()
+		_adata_nhood2 = sdata.tables["table"].copy()
+		sq.gr.spatial_neighbors(_adata_nhood2, coord_type="generic")
+		_nhood_enrichment_numpy(_adata_nhood2, cluster_key="cell_type", seed=0)
+		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
+		if "spatialdata_attrs" in _adata_nhood2.uns:
+			del _adata_nhood2.uns["spatialdata_attrs"]
+		sdata.tables["table_annotated_enrichment"] = _TM.parse(
+			_adata_nhood2,
+			region       = "halo_labels",
+			region_key   = "region",
+			instance_key = "instance_id",
 		)
+		print("Neighborhood Enrichment done.")
+		_sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_annotated_enrichment",
