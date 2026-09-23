@@ -470,18 +470,14 @@ rule process_halo:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
-		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
-		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 4096,
+			chunks       = 2048,
 			overwrite    = True,
 		)
-		print("Rasterization complete.")
-		sys.stdout.flush()
 
 		sdata.table = TableModel.parse(
 			adata,
@@ -600,31 +596,13 @@ rule process_halo:
 			plt.close()
 
 		print("Performing Neighborhood Enrichment Analysis")
-		import sys, squidpy as sq
-		from spatialdata.models import TableModel as _TM
-		sys.stdout.flush()
-		# Bypass hp.tb.nhood_enrichment — harpy does not expose numba_parallel,
-		# so call squidpy directly with numba_parallel=False to use a plain for-loop
-		# instead of numba prange, which deadlocks inside Docker/WSL2.
-		_adata_nhood = sdata.tables["table"].copy()
-		sq.gr.spatial_neighbors(_adata_nhood, coord_type="generic")
-		sq.gr.nhood_enrichment(
-			_adata_nhood,
-			cluster_key    = "leiden_clusters",
-			seed           = 0,
-			numba_parallel = False,
+		hp.tb.nhood_enrichment(
+			sdata,
+			labels_layer    = "halo_labels",
+			table_layer     = "table",
+			output_layer    = "table_score_genes_enrichment",
+			celltype_column = "leiden_clusters",
 		)
-		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
-		if "spatialdata_attrs" in _adata_nhood.uns:
-			del _adata_nhood.uns["spatialdata_attrs"]
-		sdata.tables["table_score_genes_enrichment"] = _TM.parse(
-			_adata_nhood,
-			region       = "halo_labels",
-			region_key   = "region",
-			instance_key = "instance_id",
-		)
-		print("Neighborhood Enrichment done.")
-		sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_score_genes_enrichment",
@@ -742,18 +720,14 @@ rule post_annotation_viz:
 		sdata.shapes["halo_cells"] = cells_shapes
 
 		target_shape = (44643, 44643)
-		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
-		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 4096,
+			chunks       = 2048,
 			overwrite    = True,
 		)
-		print("Rasterization complete.")
-		sys.stdout.flush()
 
 		if "spatialdata_attrs" in adata.uns:
 			del adata.uns["spatialdata_attrs"]
@@ -765,32 +739,13 @@ rule post_annotation_viz:
 			instance_key = "instance_id",
 		)
 
-		# Bypass hp.tb.nhood_enrichment — harpy does not expose numba_parallel,
-		# so call squidpy directly with numba_parallel=False to prevent deadlock
-		# inside Docker/WSL2.
-		import squidpy as sq
-		from spatialdata.models import TableModel as _TM
-		print("Performing Neighborhood Enrichment Analysis (post-annotation)")
-		import sys as _sys; _sys.stdout.flush()
-		_adata_nhood2 = sdata.tables["table"].copy()
-		sq.gr.spatial_neighbors(_adata_nhood2, coord_type="generic")
-		sq.gr.nhood_enrichment(
-			_adata_nhood2,
-			cluster_key    = "cell_type",
-			seed           = 0,
-			numba_parallel = False,
+		hp.tb.nhood_enrichment(
+			sdata,
+			labels_layer    = "halo_labels",
+			table_layer     = "table",
+			celltype_column = "cell_type",
+			output_layer    = "table_annotated_enrichment",
 		)
-		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
-		if "spatialdata_attrs" in _adata_nhood2.uns:
-			del _adata_nhood2.uns["spatialdata_attrs"]
-		sdata.tables["table_annotated_enrichment"] = _TM.parse(
-			_adata_nhood2,
-			region       = "halo_labels",
-			region_key   = "region",
-			instance_key = "instance_id",
-		)
-		print("Neighborhood Enrichment done.")
-		_sys.stdout.flush()
 		hp.pl.nhood_enrichment(
 			sdata,
 			table_layer     = "table_annotated_enrichment",
