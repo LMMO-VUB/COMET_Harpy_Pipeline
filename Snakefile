@@ -614,6 +614,9 @@ rule process_halo:
 			seed           = 0,
 			numba_parallel = False,
 		)
+		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
+		if "spatialdata_attrs" in _adata_nhood.uns:
+			del _adata_nhood.uns["spatialdata_attrs"]
 		sdata.tables["table_score_genes_enrichment"] = _TM.parse(
 			_adata_nhood,
 			region       = "halo_labels",
@@ -777,6 +780,9 @@ rule post_annotation_viz:
 			seed           = 0,
 			numba_parallel = False,
 		)
+		# Strip spatialdata_attrs so _TM.parse doesn't raise "already set" error
+		if "spatialdata_attrs" in _adata_nhood2.uns:
+			del _adata_nhood2.uns["spatialdata_attrs"]
 		sdata.tables["table_annotated_enrichment"] = _TM.parse(
 			_adata_nhood2,
 			region       = "halo_labels",
