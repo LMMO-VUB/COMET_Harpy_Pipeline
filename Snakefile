@@ -600,7 +600,9 @@ rule process_halo:
 			plt.close()
 
 		print("Performing Neighborhood Enrichment Analysis")
-		import sys; sys.stdout.flush()
+		import sys, numba
+		numba.set_num_threads(1)  # prevent deadlock inside Docker
+		sys.stdout.flush()
 		hp.tb.nhood_enrichment(
 			sdata,
 			labels_layer    = "halo_labels",

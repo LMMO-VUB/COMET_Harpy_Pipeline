@@ -23,9 +23,9 @@ services:
       # Limit numba/OpenMP/MKL thread pools to prevent deadlocks inside Docker.
       # With 40 cores visible, numba spawns 40 threads per pool and they can
       # deadlock when nested. 4 threads is enough for neighbourhood enrichment.
-      - NUMBA_NUM_THREADS=4
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
+      - NUMBA_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
 
     # Inline command avoids shell-script line-ending issues on Windows.
     # Seeds metadata_markers.csv into /data if absent, then runs Snakemake.
