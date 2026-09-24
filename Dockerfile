@@ -41,13 +41,33 @@ RUN conda config --add channels defaults \
     && conda config --add channels conda-forge \
     && conda config --set channel_priority strict
 
-# Install exact Python and spatial math library foundations from your Mac history
+# Install exact Python and spatial math library foundations from your Mac history.
+#
+# scanpy/umap-learn/scikit-learn/igraph, and especially pynndescent, numba, and
+# leidenalg, are pinned explicitly here (not just left as transitive deps of
+# squidpy) because a version mismatch in exactly these three packages between
+# this image and the Mac's sproteo_fresh env was confirmed (2026-09-24) to
+# produce genuinely different Leiden cluster counts at the same
+# clustering_resolution, and a visibly different UMAP -- not just cosmetic
+# layout noise. pynndescent builds the approximate neighbor graph Leiden
+# clusters on, and leidenalg is the clustering implementation itself, so a
+# minor-version drift in either is enough to change results; numba is what
+# both are JIT-compiled through. Versions below match the Mac exactly as of
+# that date -- if you ever update the Mac env, update these to match (and
+# vice versa), don't let them drift independently again.
 RUN mamba install -y \
     python=3.10 \
     numpy=1.26 \
     scipy=1.11 \
     scikit-image \
     squidpy=1.6.5 \
+    scanpy=1.11.5 \
+    umap-learn=0.5.12 \
+    pynndescent=0.5.13 \
+    scikit-learn=1.7.2 \
+    numba=0.65.1 \
+    leidenalg=0.11.0 \
+    python-igraph=1.0.0 \
     snakemake \
     && mamba clean --all -y
 

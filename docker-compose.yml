@@ -23,16 +23,18 @@ services:
       # (PCA, clustering, etc.) appear in the log as they happen, not after
       # the entire step finishes.
       - PYTHONUNBUFFERED=1
-      # nhood_enrichment no longer goes through numba at all -- the Snakefile's
-      # _nhood_enrichment_numpy() replaced squidpy's numba-based implementation
-      # because numba/LLVM JIT was deadlocking inside Docker/WSL2. NUMBA_NUM_THREADS
-      # is kept at 4 here only for other numba-jitted code still in the pipeline
-      # (e.g. umap-learn's optimizer inside sc.tl.umap); OMP/MKL thread counts
-      # below are informational only -- the Snakefile forces those to 1 via
-      # os.environ at parse time regardless of what's set here.
-      - NUMBA_NUM_THREADS=4
-      - OMP_NUM_THREADS=4
-      - MKL_NUM_THREADS=4
+      # NUMBA_NUM_THREADS/OMP_NUM_THREADS/MKL_NUM_THREADS below are informational
+      # only -- the Snakefile now forces all three (plus a few others) to "1"
+      # via os.environ at parse time, on every platform it runs on, regardless
+      # of what's set here. That's deliberate: a mismatched NUMBA_NUM_THREADS
+      # between Mac and Windows (this file previously set 4 here; the Mac had
+      # no override, so it defaulted to all cores) was one of several
+      # confirmed contributors to Mac vs Windows runs producing different
+      # Leiden cluster counts and UMAP layouts from identical config. See the
+      # Snakefile's own comment on this for the full explanation.
+      - NUMBA_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
 
     # Inline command avoids shell-script line-ending issues on Windows.
     # Seeds metadata_markers.csv into /data if absent, then runs Snakemake.

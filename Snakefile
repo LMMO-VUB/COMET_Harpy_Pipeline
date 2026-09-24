@@ -21,7 +21,18 @@ streamlit_port        = int(config.get("streamlit_port", 8501))
 PIPELINE_DIR = os.path.dirname(os.path.abspath(workflow.snakefile))
 
 ######################################
-### Prevent thread over-subscription in numpy/scipy backends
+### Prevent thread over-subscription in numpy/scipy backends, and make
+### pynndescent/umap-learn's numba-jitted code single-threaded.
+###
+### NUMBA_NUM_THREADS matters beyond just avoiding oversubscription: numba's
+### parallel reductions are order-sensitive (floating-point addition isn't
+### associative), so a different thread count can change results from
+### sc.pp.neighbors/sc.tl.umap even with identical package versions and a
+### fixed random_state. This was previously only set to 4 in
+### docker-compose.yml (Windows-only, and not even matching this file's other
+### THREADS=1 settings); setting it here forces the same value on every
+### platform this Snakefile runs on, Mac included, where it was previously
+### left at whatever default (usually all cores).
 ######################################
 os.environ["OMP_NUM_THREADS"]        = "1"
 os.environ["MKL_NUM_THREADS"]        = "1"
@@ -29,6 +40,7 @@ os.environ["OPENBLAS_NUM_THREADS"]   = "1"
 os.environ["BLAS_NUM_THREADS"]       = "1"
 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"]    = "1"
+os.environ["NUMBA_NUM_THREADS"]      = "1"
 
 ######################################
 ### Auto-generate metadata_markers.csv if absent.
