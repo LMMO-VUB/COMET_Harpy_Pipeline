@@ -37,27 +37,30 @@ services:
       - MKL_NUM_THREADS=1
 
     # Inline command avoids shell-script line-ending issues on Windows.
-    # Seeds metadata_markers.csv into /data if absent, then runs Snakemake.
     # --unlock clears any stale lock left by a previous force-kill before
     # the real run starts (harmless when no lock exists).
     #
-    # The "if absent, copy the pipeline's own metadata_markers.csv into
-    # /data" fallback below is a safety net for a first-time project setup,
-    # NOT something that should ever fire for a real, already-configured
-    # project. Confirmed on 2026-09-25 that it fired silently for every
-    # Docker run on a network-drive project folder, because
-    # launch_pipeline_gui.py's staging step (needed on network drives) only
-    # copied the CSV, never the project's own metadata_markers.csv -- so
-    # Docker runs were silently using this image's placeholder marker list
-    # (wrong marker names, missing most of the real panel) instead of the
-    # researcher's actual one, producing genuinely different Leiden cluster
-    # counts and UMAPs from a native run of the exact same CSV. The GUI
-    # launcher now stages metadata_markers.csv too, so this fallback should
-    # no longer trigger in normal use -- but if it ever does again (for any
-    # reason, on any machine), it now prints a loud, impossible-to-miss
-    # warning instead of one quiet line easily lost among normal startup
-    # output, so nobody loses hours to this again before noticing.
+    # This used to also seed /data/metadata_markers.csv from this image's
+    # own bundled copy whenever /data didn't have one -- removed 2026-09-25.
+    # That was actively wrong, not just a redundant safety net: the Snakefile
+    # already has its own proper handling for a missing metadata_markers.csv
+    # (see its "Auto-generate metadata_markers.csv if absent" block, which
+    # calls generate_metadata.py to derive marker names from this dataset's
+    # own CSV headers, the same way a native macOS run behaves). Seeding a
+    # generic placeholder file here BEFORE Snakemake ever ran meant
+    # Snakemake's own "if not os.path.exists(metadata_file)" check always
+    # found a file already present and silently skipped its real,
+    # dataset-aware auto-generation -- so every Docker run on a
+    # network-drive project folder (where launch_pipeline_gui.py's staging
+    # step didn't carry the project's real metadata_markers.csv along; see
+    # that file's own history) got a generic bundled marker list nothing
+    # ever validated against the actual data, instead of either the
+    # project's real file or a properly auto-generated one. Confirmed this
+    # produced genuinely different Leiden cluster counts and UMAPs from a
+    # native run of the exact same CSV. Removing this block makes Docker
+    # behave exactly like a native run: if metadata_markers.csv is missing,
+    # Snakemake generates one from the real data and says so in its own log.
     entrypoint:
       - "bash"
       - "-c"
-      - "set -e && echo '[entrypoint] Pipeline: /pipeline  Data: /data' && if [ ! -f /data/metadata_markers.csv ] && [ -f /pipeline/metadata_markers.csv ]; then echo '' && echo '=================================================================' && echo '[entrypoint] !!! WARNING: /data/metadata_markers.csv NOT FOUND !!!' && echo '[entrypoint] Falling back to the PLACEHOLDER metadata_markers.csv' && echo '[entrypoint] bundled in this image. This is almost certainly NOT' && echo '[entrypoint] the marker panel for your dataset -- results from this' && echo '[entrypoint] run should NOT be trusted until this is fixed.' && echo '[entrypoint] Put your project'\\''s real metadata_markers.csv in its' && echo '[entrypoint] run folder and re-run.' && echo '=================================================================' && echo '' && cp /pipeline/metadata_markers.csv /data/metadata_markers.csv; fi && echo '[entrypoint] Clearing any stale Snakemake lock...' && snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --unlock 2>/dev/null || true && echo '[entrypoint] Starting Snakemake...' && exec snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --cores all --rerun-incomplete"
+      - "set -e && echo '[entrypoint] Pipeline: /pipeline  Data: /data' && echo '[entrypoint] Clearing any stale Snakemake lock...' && snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --unlock 2>/dev/null || true && echo '[entrypoint] Starting Snakemake...' && exec snakemake --snakefile /pipeline/Snakefile --configfile /data/config.yaml --directory /data --cores all --rerun-incomplete"
