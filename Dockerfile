@@ -99,6 +99,27 @@ RUN pip install --no-cache-dir \
     streamlit==1.58.0 \
     harpy-analysis==0.3.0
 
+# harpy-analysis only formally requires leidenalg>=0.9.1 (which 0.11.0 already
+# satisfies), but pip's resolver still re-pinned leidenalg down to 0.10.2 while
+# satisfying something in harpy's much larger transitive dependency tree
+# (spatialdata-plot, flowsom, scanpy, etc. all ship their own constraints).
+# Confirmed via `docker run --rm spatial_pipeline:v1 python -c "import
+# leidenalg; print(leidenalg.version)"` printing 0.10.2 right after a build
+# that explicitly mamba-installed 0.11.0 above -- pip silently overrode it.
+# Force it (and its C-extension partner python-igraph, which needs to stay
+# ABI-compatible with whichever leidenalg build we end up with) back to the
+# intended versions here, with --no-deps so this step only touches these two
+# packages and doesn't reopen dependency resolution for anything else pip
+# just installed. Deliberately NOT doing this for numba/pynndescent/
+# scikit-learn even though they're conceptually in the same boat: those are
+# numpy-ABI-sensitive C-extensions where a PyPI wheel could genuinely mismatch
+# the conda-forge build already confirmed correct above, and re-verifying
+# after every build (see the version-check command in the repo's commit
+# history / ask Claude) is cheap insurance against this recurring silently.
+RUN pip install --no-cache-dir --no-deps --force-reinstall \
+    leidenalg==0.11.0 \
+    python-igraph==1.0.0
+
 # Expose the standard port used by your Streamlit interactive cell-type assignment interface
 EXPOSE 8501
 
