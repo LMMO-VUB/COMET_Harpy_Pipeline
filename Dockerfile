@@ -106,27 +106,43 @@ RUN pip install --no-cache-dir \
 # Confirmed via `docker run --rm spatial_pipeline:v1 python -c "import
 # leidenalg; print(leidenalg.version)"` printing 0.10.2 right after a build
 # that explicitly mamba-installed 0.11.0 above -- pip silently overrode it.
-# Force leidenalg back with --no-deps, so this step touches ONLY leidenalg and
-# doesn't reopen dependency resolution for anything else pip just installed.
 #
-# Do NOT also list python-igraph here (an earlier version of this fix did,
-# and it was wrong): PyPI's "python-igraph" package at tag 1.0.0 reports
-# `igraph.__version__ == "0.11.9"` at runtime -- a real inconsistency between
-# how conda-forge and PyPI version this package, confirmed by testing it
-# directly. conda-forge's python-igraph=1.0.0 (installed by mamba above, and
-# confirmed matching the Mac's own conda-forge build since the very first
-# version check) genuinely reports "1.0.0" -- pip-reinstalling it would trade
-# a confirmed-correct package for a different, differently-versioned one.
-# leidenalg imports whatever `igraph` module is already present rather than
-# bundling its own, so leaving it untouched here is exactly what we want.
-# Deliberately not force-reinstalling numba/pynndescent/scikit-learn either,
-# for the same reason in reverse: those are numpy-ABI-sensitive C-extensions
-# already confirmed correct from the conda-forge build, and a PyPI wheel
-# could easily mismatch that ABI. Re-verify all of this after every rebuild
-# (see the version-check command in the repo's commit history / ask Claude)
-# -- harpy-analysis's dependency tree is loose enough that this can recur.
-RUN pip install --no-cache-dir --no-deps --force-reinstall \
-    leidenalg==0.11.0
+# leidenalg's own PyPI metadata declares python-igraph as a dependency, so
+# pulling in a replacement leidenalg drags a replacement python-igraph along
+# with it too -- confirmed the hard way: forcing ONLY leidenalg back via
+# `pip install --no-deps --force-reinstall leidenalg==0.11.0` still left
+# `igraph.__version__` reporting "0.11.9" instead of the conda-forge-correct
+# "1.0.0", because the pip install of harpy-analysis above had already
+# replaced python-igraph before this step ever ran, and --no-deps on
+# leidenalg alone doesn't touch a package that's already sitting there.
+# A prior attempt at fixing this also tried `pip install --no-deps
+# --force-reinstall leidenalg==0.11.0 python-igraph==1.0.0` together, which
+# didn't work either: PyPI's "python-igraph" package at tag 1.0.0 itself
+# reports `igraph.__version__ == "0.11.9"` at runtime -- a real
+# inconsistency between how conda-forge and PyPI version this package. So
+# there's no pip incantation that gets python-igraph back to a correctly
+# self-reporting 1.0.0.
+#
+# The reliable fix is to stop fighting pip's resolver with more pip and
+# instead re-run mamba -- the same tool and channel that installed a
+# confirmed-correct build of all of these the first time (the "Install
+# exact Python and spatial math library foundations" step above) -- with
+# --force-reinstall, after pip has had its say. This puts every one of
+# these packages back on the exact conda-forge build already confirmed to
+# match the Mac, not just leidenalg, which also guards against any other
+# package in this list that pip's resolver might silently touch without us
+# noticing. Re-verify after every rebuild:
+#   docker run --rm spatial_pipeline:v1 python -c "import leidenalg, igraph; print(leidenalg.version, igraph.__version__)"
+# should print "0.11.0 1.0.0".
+RUN mamba install -y --force-reinstall \
+    scanpy=1.11.5 \
+    umap-learn=0.5.12 \
+    pynndescent=0.5.13 \
+    scikit-learn=1.7.2 \
+    numba=0.65.1 \
+    leidenalg=0.11.0 \
+    python-igraph=1.0.0 \
+    && mamba clean --all -y
 
 # Expose the standard port used by your Streamlit interactive cell-type assignment interface
 EXPOSE 8501
