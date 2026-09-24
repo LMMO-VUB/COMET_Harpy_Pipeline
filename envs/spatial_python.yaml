@@ -13,4 +13,8 @@ dependencies:
   - streamlit
   - pip
   - pip:
-    - harpy-spatial
+    # "harpy-spatial" is not a real PyPI package (verified — no such package
+    # exists) and `pip install` of it will fail outright. The package that
+    # provides `import harpy` is "harpy-analysis"; pinned to match the
+    # version the Dockerfile installs (also sourced from the Mac environment).
+    - harpy-analysis==0.3.0

@@ -205,12 +205,11 @@ def generate(input_csv, output_csv):
 
     if fmt == "HORIZON":
         print(
-            "WARNING: this looks like a Horizon export. generate_metadata.py can "
-            "list the markers it finds, but the Snakemake 'process_halo' rule "
-            "currently only knows how to parse HALO-format exports (columns like "
-            "'Object Id', 'XMin', 'Cell Area (\u00b5m\u00b2)'). Loading a Horizon file "
-            "into the rest of the pipeline as-is will fail -- talk to your pipeline "
-            "maintainer about adding Horizon support before proceeding."
+            "NOTE: this looks like a Horizon export. The Snakemake 'process_halo' "
+            "rule supports both HALO and Horizon formats, but double-check the "
+            "markers detected below (and their type/localization) before running "
+            "the pipeline -- Horizon column naming varies more between exports "
+            "than HALO's does."
         )
 
     rows = []

@@ -652,10 +652,35 @@ class CometLauncherApp(tk.Tk):
     def _on_stop(self) -> None:
         if self._process and self._running:
             self._log_write("\n[COMET] Stopping…\n")
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
+            # Ask docker compose to stop the container gracefully first. Just
+            # calling self._process.terminate() kills the "docker compose up"
+            # CLI wrapper on Windows via TerminateProcess, which does NOT stop
+            # the actual container -- comet_pipeline (and Snakemake inside it)
+            # keeps running in the background, invisible to the GUI. Running
+            # "docker compose stop" actually stops the container; once it
+            # exits, the "up" process's stdout closes naturally and the log
+            # loop in _docker_thread finishes on its own.
+            def _graceful_stop() -> None:
+                try:
+                    subprocess.run(
+                        ["docker", "compose", "-f", COMPOSE_FILE, "stop"],
+                        cwd=SCRIPT_DIR,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        **_popen_kwargs(),
+                    )
+                except Exception as exc:
+                    self._log_write(f"[COMET] Warning: 'docker compose stop' failed: {exc}\n")
+                # Fallback in case the container didn't exit and the log loop
+                # is still blocked reading stdout.
+                try:
+                    if self._process is not None:
+                        self._process.terminate()
+                except Exception:
+                    pass
+
+            threading.Thread(target=_graceful_stop, daemon=True).start()
 
     def _await_streamlit(self, port: int) -> None:
         """

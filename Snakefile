@@ -304,6 +304,10 @@ rule process_halo:
 			)
 
 		# ── 4. Detect input format ────────────────────────────────────────────
+		# Defined here (rather than after format detection) because the Horizon
+		# branch needs it immediately below to convert its micron coordinates
+		# into the same pixel space HALO's XMin/XMax already use.
+		pixel_size    = 0.5    # µm per pixel
 		_halo_cols    = {"Object Id", "XMin", "XMax", "YMin", "YMax"}
 		_horizon_cols = {"Annotation Group", "Annotation Index"}
 
@@ -324,8 +328,15 @@ rule process_halo:
 			input_format = "HORIZON"
 			# Determine whether this export uses Cells/ or Nuclei/ column prefix
 			_hz_pfx = "Cells" if any(c.startswith("Cells/") for c in df.columns) else "Nuclei"
-			df["x"]               = pd.to_numeric(df[f"{_hz_pfx}/X Position in μm"], errors="coerce")
-			df["y"]               = pd.to_numeric(df[f"{_hz_pfx}/Y Position in μm"], errors="coerce")
+			# Horizon reports position in microns, unlike HALO's XMin/XMax (pixels).
+			# Convert to pixel space here so "x"/"y" are always in the same units
+			# as radius_px below, regardless of input format -- otherwise the
+			# per-cell buffer radius (computed in pixels) gets applied around
+			# micron-scale coordinates and cell footprints end up roughly
+			# 1/pixel_size times too large relative to real inter-cell spacing,
+			# which can make adjacent cells' rasterized shapes overlap.
+			df["x"] = pd.to_numeric(df[f"{_hz_pfx}/X Position in μm"], errors="coerce") / pixel_size
+			df["y"] = pd.to_numeric(df[f"{_hz_pfx}/Y Position in μm"], errors="coerce") / pixel_size
 			# Annotation Index resets per ROI — use global row numbers for a unique id
 			df["Object_Id_Clean"] = np.arange(1, len(df) + 1)
 			df["cell_area_um2"]   = pd.to_numeric(df[f"{_hz_pfx}/Area in μm2"], errors="coerce")
@@ -344,7 +355,6 @@ rule process_halo:
 				errors="coerce",
 			)
 
-		pixel_size          = 0.5    # µm per pixel
 		df["cell_area_px"]  = df["cell_area_um2"] / (pixel_size ** 2)
 		df["radius_px"]     = np.sqrt(df["cell_area_px"] / np.pi)
 
@@ -529,15 +539,32 @@ rule process_halo:
 		cells_shapes = ShapesModel.parse(gdf, transformations={"global": Identity()})
 		sdata.shapes["halo_cells"] = cells_shapes
 
-		target_shape = (44643, 44643)
-		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		# Size the label-image canvas from the actual data extent (max cell
+		# coordinate + its buffer radius), rather than a value hardcoded for one
+		# test slide. A different sample's image footprint would otherwise get
+		# silently clipped if it exceeded a fixed canvas, or waste memory/time
+		# rasterizing a canvas much larger than needed.
+		_rasterize_chunks = 4096
+		_max_extent = float(
+			max(
+				(df["x"] + df["radius_px"]).max(),
+				(df["y"] + df["radius_px"]).max(),
+			)
+		)
+		_margin      = 256  # px, headroom beyond the outermost cell's buffer
+		_raw_extent  = int(np.ceil(_max_extent)) + _margin
+		# Round up to a whole number of chunks so hp.im.rasterize doesn't have
+		# to handle a ragged final chunk.
+		_side = int(np.ceil(_raw_extent / _rasterize_chunks)) * _rasterize_chunks
+		target_shape = (_side, _side)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks={_rasterize_chunks})…")
 		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 4096,
+			chunks       = _rasterize_chunks,
 			overwrite    = True,
 		)
 		print("Rasterization complete.")
@@ -703,12 +730,13 @@ rule annotate_clusters:
 		annotated_h5ad = f"{output_directory}/{name_of_project}_annotated.h5ad"
 	run:
 		import os
+		import sys
 		import subprocess
 		import time
 
 		print("\n" + "=" * 60)
 		print("PIPELINE PAUSED: LAUNCHING INTERACTIVE ANNOTATION PORTAL")
-		print("Open http://localhost:8501 in your browser.")
+		print(f"Open http://localhost:{streamlit_port} in your browser.")
 		print("Complete annotations and click 'Finalize' to resume.")
 		print("=" * 60 + "\n")
 
@@ -734,9 +762,22 @@ rule annotate_clusters:
 
 		process = subprocess.Popen(cmd)
 
-		# Block Snakemake until the researcher saves annotations
+		# Block Snakemake until the researcher saves annotations. There is no
+		# timeout here by design -- annotation is a manual step that can take
+		# however long it takes -- but print an occasional heartbeat so the log
+		# (and the Windows GUI, which mirrors this log) makes clear the pipeline
+		# is still just waiting on the researcher, not hung.
+		_wait_elapsed = 0
+		_heartbeat_every = 300  # seconds
 		while not os.path.exists(output.annotated_h5ad):
 			time.sleep(2)
+			_wait_elapsed += 2
+			if _wait_elapsed % _heartbeat_every == 0:
+				print(
+					"[COMET] Still waiting on annotation portal "
+					f"(http://localhost:{streamlit_port}) -- {_wait_elapsed // 60} min elapsed."
+				)
+				sys.stdout.flush()
 
 		print("\nAnnotations saved. Resuming pipeline ...")
 		process.terminate()
@@ -752,6 +793,7 @@ rule post_annotation_viz:
 		nhood_img = f"{output_directory}/images_final/nhood_enrichment_final.png"
 	run:
 		import os
+		import numpy as np
 		import matplotlib
 		matplotlib.use("Agg")
 		import matplotlib.pyplot as plt
@@ -795,15 +837,26 @@ rule post_annotation_viz:
 		cells_shapes = ShapesModel.parse(gdf, transformations={"global": Identity()})
 		sdata.shapes["halo_cells"] = cells_shapes
 
-		target_shape = (44643, 44643)
-		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks=4096)…")
+		# Same data-driven canvas sizing as process_halo -- see the comment there.
+		_rasterize_chunks = 4096
+		_max_extent = float(
+			max(
+				(adata.obs["x"] + adata.obs["radius_px"]).max(),
+				(adata.obs["y"] + adata.obs["radius_px"]).max(),
+			)
+		)
+		_margin      = 256  # px
+		_raw_extent  = int(np.ceil(_max_extent)) + _margin
+		_side = int(np.ceil(_raw_extent / _rasterize_chunks)) * _rasterize_chunks
+		target_shape = (_side, _side)
+		print(f"Rasterizing cell shapes into {target_shape[0]}×{target_shape[1]} label image (chunks={_rasterize_chunks})…")
 		import sys; sys.stdout.flush()
 		hp.im.rasterize(
 			sdata        = sdata,
 			shapes_layer = "halo_cells",
 			output_layer = "halo_labels",
 			out_shape    = target_shape,
-			chunks       = 4096,
+			chunks       = _rasterize_chunks,
 			overwrite    = True,
 		)
 		print("Rasterization complete.")

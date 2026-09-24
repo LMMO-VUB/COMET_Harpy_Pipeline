@@ -1,13 +1,38 @@
+# Reference environment for running the pipeline directly via `snakemake`
+# (as opposed to through Docker) — e.g. on the M2 Mac.
+#
+# NOTE: this file was previously missing most of what the Snakefile and
+# app.py actually import at runtime (pandas, anndata, spatialdata, geopandas,
+# shapely, harpy, matplotlib, streamlit were all absent) — recreating the env
+# from the old version of this file would have failed immediately. The
+# missing packages below were reconstructed from the pipeline's own imports
+# plus the versions the Dockerfile documents as taken directly from this same
+# Mac environment (anndata, streamlit, harpy-analysis, squidpy). This has NOT
+# been verified against a live `conda env export -n sproteo_fresh --no-builds`
+# (not reachable from this session) — please regenerate this file that way
+# next time you touch the sproteo_fresh env, to catch anything still missing
+# or any transitive pins (e.g. geopandas/shapely/spatialdata versions) this
+# reconstruction couldn't know about.
 name: sproteo_fresh
 channels:
   - conda-forge
   - bioconda
   - defaults
 dependencies:
-  - squidpy
-  - scikit-image
-  - scipy=1.11
-  - numpy=1.26
   - python=3.10
+  - numpy=1.26
+  - scipy=1.11
+  - pandas
+  - scikit-image
+  - matplotlib
+  - geopandas
+  - shapely
   - snakemake
+  - squidpy=1.6.5
+  - pip
+  - pip:
+    - anndata==0.11.4
+    - streamlit==1.58.0
+    - spatialdata
+    - harpy-analysis==0.3.0
 prefix: /Users/JackBrons/miniconda3/envs/sproteo_fresh
