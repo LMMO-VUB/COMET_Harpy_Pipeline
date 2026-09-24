@@ -639,18 +639,49 @@ class CometLauncherApp(tk.Tk):
         if staging_dir:
             metadata_src = os.path.join(run_dir, "metadata_markers.csv")
             metadata_dst = os.path.join(staging_dir, "metadata_markers.csv")
-            if os.path.exists(metadata_src) and os.path.abspath(metadata_src) != os.path.abspath(metadata_dst):
+            if os.path.exists(metadata_src):
+                if os.path.abspath(metadata_src) != os.path.abspath(metadata_dst):
+                    self._log_write(
+                        f"[COMET] Copying metadata_markers.csv…\n"
+                        f"        {metadata_src}\n"
+                        f"     →  {metadata_dst}\n"
+                    )
+                    try:
+                        shutil.copy2(metadata_src, metadata_dst)
+                        self._log_write("[COMET] Copy done.\n\n")
+                    except OSError as exc:
+                        messagebox.showerror("File copy failed", str(exc))
+                        return
+            else:
+                # This project folder has no metadata_markers.csv of its own.
+                # Found 2026-09-25: staying silent here is exactly what let
+                # this whole bug hide for who knows how many runs -- Docker's
+                # entrypoint falls back to a bundled placeholder marker list
+                # in this case (or, worse, a WRONG file already left over
+                # from an earlier staged run keeps getting silently reused,
+                # since this step never had anything of its own to copy over
+                # it). Make this loud in the GUI log itself, not just in
+                # Docker's build output, since that's what people actually
+                # watch while a run is going.
                 self._log_write(
-                    f"[COMET] Copying metadata_markers.csv…\n"
-                    f"        {metadata_src}\n"
-                    f"     →  {metadata_dst}\n"
+                    f"[COMET] !!! WARNING: no metadata_markers.csv found in your\n"
+                    f"        run folder ({run_dir}).\n"
+                    f"        The pipeline will fall back to a placeholder marker\n"
+                    f"        list that almost certainly does NOT match this\n"
+                    f"        dataset's real marker panel. Put this project's own\n"
+                    f"        metadata_markers.csv in the run folder and re-run\n"
+                    f"        before trusting these results.\n\n"
                 )
-                try:
-                    shutil.copy2(metadata_src, metadata_dst)
-                    self._log_write("[COMET] Copy done.\n\n")
-                except OSError as exc:
-                    messagebox.showerror("File copy failed", str(exc))
-                    return
+                # If an earlier run already staged a (possibly wrong) file
+                # here, leave it alone rather than deleting it blind -- but
+                # make sure it's at least visible that we're not the ones
+                # who put it there this time.
+                if os.path.exists(metadata_dst):
+                    self._log_write(
+                        f"[COMET] Note: a metadata_markers.csv already exists in\n"
+                        f"        the staging folder from a previous run\n"
+                        f"        ({metadata_dst}) and will be reused as-is.\n\n"
+                    )
 
         try:
             cfg = _write_config(
