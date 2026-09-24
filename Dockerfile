@@ -106,19 +106,27 @@ RUN pip install --no-cache-dir \
 # Confirmed via `docker run --rm spatial_pipeline:v1 python -c "import
 # leidenalg; print(leidenalg.version)"` printing 0.10.2 right after a build
 # that explicitly mamba-installed 0.11.0 above -- pip silently overrode it.
-# Force it (and its C-extension partner python-igraph, which needs to stay
-# ABI-compatible with whichever leidenalg build we end up with) back to the
-# intended versions here, with --no-deps so this step only touches these two
-# packages and doesn't reopen dependency resolution for anything else pip
-# just installed. Deliberately NOT doing this for numba/pynndescent/
-# scikit-learn even though they're conceptually in the same boat: those are
-# numpy-ABI-sensitive C-extensions where a PyPI wheel could genuinely mismatch
-# the conda-forge build already confirmed correct above, and re-verifying
-# after every build (see the version-check command in the repo's commit
-# history / ask Claude) is cheap insurance against this recurring silently.
+# Force leidenalg back with --no-deps, so this step touches ONLY leidenalg and
+# doesn't reopen dependency resolution for anything else pip just installed.
+#
+# Do NOT also list python-igraph here (an earlier version of this fix did,
+# and it was wrong): PyPI's "python-igraph" package at tag 1.0.0 reports
+# `igraph.__version__ == "0.11.9"` at runtime -- a real inconsistency between
+# how conda-forge and PyPI version this package, confirmed by testing it
+# directly. conda-forge's python-igraph=1.0.0 (installed by mamba above, and
+# confirmed matching the Mac's own conda-forge build since the very first
+# version check) genuinely reports "1.0.0" -- pip-reinstalling it would trade
+# a confirmed-correct package for a different, differently-versioned one.
+# leidenalg imports whatever `igraph` module is already present rather than
+# bundling its own, so leaving it untouched here is exactly what we want.
+# Deliberately not force-reinstalling numba/pynndescent/scikit-learn either,
+# for the same reason in reverse: those are numpy-ABI-sensitive C-extensions
+# already confirmed correct from the conda-forge build, and a PyPI wheel
+# could easily mismatch that ABI. Re-verify all of this after every rebuild
+# (see the version-check command in the repo's commit history / ask Claude)
+# -- harpy-analysis's dependency tree is loose enough that this can recur.
 RUN pip install --no-cache-dir --no-deps --force-reinstall \
-    leidenalg==0.11.0 \
-    python-igraph==1.0.0
+    leidenalg==0.11.0
 
 # Expose the standard port used by your Streamlit interactive cell-type assignment interface
 EXPOSE 8501
