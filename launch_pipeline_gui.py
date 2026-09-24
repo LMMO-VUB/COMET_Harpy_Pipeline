@@ -616,6 +616,42 @@ class CometLauncherApp(tk.Tk):
                 messagebox.showerror("File copy failed", str(exc))
                 return
 
+        # Also stage this project's own metadata_markers.csv, not just the CSV.
+        #
+        # Bug found 2026-09-25: when staging was needed (network-drive run
+        # folders, which is the common case in practice), this function only
+        # ever copied the HALO/Horizon CSV into staging_dir -- never
+        # metadata_markers.csv. Docker's entrypoint (docker-compose.yml) only
+        # seeds /data/metadata_markers.csv from the image's own bundled copy
+        # when /data doesn't already have one, so with metadata_markers.csv
+        # missing from the staging folder, every Docker run silently fell
+        # back to the pipeline image's generic placeholder marker list
+        # instead of this project's real one. That placeholder list uses
+        # different marker names (e.g. "Cytokeratin" instead of this
+        # project's "PanCK") and is missing most of a real panel, which
+        # silently reclassifies most marker columns as "extra metadata"
+        # instead of expression data -- confirmed to be the actual cause of
+        # Leiden cluster counts and UMAP layouts differing from a native
+        # (non-Docker) run of the identical CSV, which was otherwise wrongly
+        # suspected to be a package-version or CPU-architecture difference.
+        # Mirror the CSV-staging logic above so the project's real
+        # metadata_markers.csv always travels with it.
+        if staging_dir:
+            metadata_src = os.path.join(run_dir, "metadata_markers.csv")
+            metadata_dst = os.path.join(staging_dir, "metadata_markers.csv")
+            if os.path.exists(metadata_src) and os.path.abspath(metadata_src) != os.path.abspath(metadata_dst):
+                self._log_write(
+                    f"[COMET] Copying metadata_markers.csv…\n"
+                    f"        {metadata_src}\n"
+                    f"     →  {metadata_dst}\n"
+                )
+                try:
+                    shutil.copy2(metadata_src, metadata_dst)
+                    self._log_write("[COMET] Copy done.\n\n")
+                except OSError as exc:
+                    messagebox.showerror("File copy failed", str(exc))
+                    return
+
         try:
             cfg = _write_config(
                 data_dir_for_csv, project_name, os.path.basename(csv_abs),
