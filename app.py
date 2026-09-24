@@ -46,13 +46,13 @@ with col_left:
         st.session_state.base_table,
         disabled=["Cluster ID"],
         hide_index=True,
-        use_container_width=True,
+        width="stretch",
         num_rows="fixed",
         key="static_editor",
     )
 
     st.markdown("---")
-    if st.button("Finalize & Resume Pipeline", type="primary", use_container_width=True):
+    if st.button("Finalize & Resume Pipeline", type="primary", width="stretch"):
         mapping = dict(
             zip(
                 edited_output["Cluster ID"].astype(str),
@@ -101,7 +101,7 @@ with col_right:
                 st.image(
                     anchor_path,
                     caption=f"Reference: {umap_files[0]}",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.warning(
@@ -131,7 +131,7 @@ with col_right:
                 st.image(
                     os.path.join(args.img_dir, selected_plot),
                     caption=f"Viewing: {selected_plot}",
-                    use_container_width=True,
+                    width="stretch",
                 )
             else:
                 st.info("No marker plots found.")
