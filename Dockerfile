@@ -93,69 +93,41 @@ RUN mamba install -y \
     r-seurat=4.4.0 \
     && mamba clean --all -y
 
-# Install exact PyPI spatial and dashboard packages from your Mac environment
-RUN pip install --no-cache-dir \
-    anndata==0.11.4 \
-    streamlit==1.58.0 \
-    harpy-analysis==0.3.0
-
-# harpy-analysis only formally requires leidenalg>=0.9.1 (which 0.11.0 already
-# satisfies), but pip's resolver still re-pinned leidenalg down to 0.10.2 while
-# satisfying something in harpy's much larger transitive dependency tree
-# (spatialdata-plot, flowsom, scanpy, etc. all ship their own constraints).
-# Confirmed via `docker run --rm spatial_pipeline:v1 python -c "import
-# leidenalg; print(leidenalg.version)"` printing 0.10.2 right after a build
-# that explicitly mamba-installed 0.11.0 above -- pip silently overrode it.
+# Install exact PyPI spatial and dashboard packages from your Mac environment.
 #
-# leidenalg's own PyPI metadata declares python-igraph as a dependency, so
-# pulling in a replacement leidenalg drags a replacement python-igraph along
-# with it too -- confirmed the hard way: forcing ONLY leidenalg back via
-# `pip install --no-deps --force-reinstall leidenalg==0.11.0` still left
-# `igraph.__version__` reporting "0.11.9" instead of the conda-forge-correct
-# "1.0.0", because the pip install of harpy-analysis above had already
-# replaced python-igraph before this step ever ran, and --no-deps on
-# leidenalg alone doesn't touch a package that's already sitting there.
-# A prior attempt at fixing this also tried `pip install --no-deps
-# --force-reinstall leidenalg==0.11.0 python-igraph==1.0.0` together, which
-# didn't work either: PyPI's "python-igraph" package at tag 1.0.0 itself
-# reports `igraph.__version__ == "0.11.9"` at runtime -- a real
-# inconsistency between how conda-forge and PyPI version this package. So
-# there's no pip incantation that gets python-igraph back to a correctly
-# self-reporting 1.0.0.
+# leidenalg=0.11.0 and python-igraph=1.0.0 are already installed correctly
+# via mamba above. Left alone, this step breaks that: harpy-analysis's large
+# transitive dependency tree (spatialdata-plot, flowsom, scanpy, etc.) makes
+# pip's resolver replace both anyway -- confirmed repeatedly on Windows,
+# first down to leidenalg 0.10.2 with python-igraph 0.11.9 dragged along as
+# leidenalg's own PyPI dependency. Two different after-the-fact fixes were
+# tried and both failed: forcing leidenalg/python-igraph back via
+# `pip install --no-deps --force-reinstall` (PyPI's "python-igraph==1.0.0"
+# release itself reports igraph.__version__ == "0.11.9" at runtime -- a real
+# conda-forge/PyPI version-labeling mismatch, so no pip version string gets
+# this right), and separately re-running `mamba install --force-reinstall`
+# afterward (mamba's own solver, with harpy's pip dependencies already
+# present, silently re-resolved back to the same 0.10.2/0.11.9 pair instead
+# of erroring -- something pip installs is genuinely incompatible with
+# leidenalg=0.11.0/python-igraph=1.0.0 in this environment, not just a
+# resolver quirk).
 #
-# The reliable fix is to stop fighting pip's resolver with more pip and
-# instead re-run mamba -- the same tool and channel that installed a
-# confirmed-correct build of all of these the first time (the "Install
-# exact Python and spatial math library foundations" step above).
-#
-# A plain `mamba install --force-reinstall leidenalg=0.11.0
-# python-igraph=1.0.0` here was ALSO tried and ALSO didn't work (confirmed
-# on Windows: still reported 0.10.2 / 0.11.9 afterward, identical to what
-# pip had left behind). The likely cause: pip overwrote the on-disk files
-# for these packages without updating conda's own installed-package
-# records, so conda's records still say "leidenalg 0.11.0 is already
-# installed here" and --force-reinstall's usual linking shortcuts can skip
-# actually re-copying files it believes are already correct, leaving pip's
-# files in place underneath. So this step first deletes the on-disk
-# package directories directly (bypassing both pip's and conda's
-# bookkeeping, which by this point disagree with each other and with
-# reality) before asking mamba for a genuinely fresh install into empty
-# space, and then asserts the result at build time instead of trusting it
-# -- if this ever regresses again, the build fails immediately with the
-# actual versions printed, rather than silently shipping a bad image that
-# only gets caught hours later during a pipeline run.
-RUN SITE=$(python -c "import sysconfig; print(sysconfig.get_paths()['purelib'])") \
-    && (pip uninstall -y leidenalg python-igraph igraph 2>/dev/null || true) \
-    && rm -rf "$SITE"/leidenalg* "$SITE"/igraph* "$SITE"/python_igraph* \
-    && mamba install -y --force-reinstall \
-        scanpy=1.11.5 \
-        umap-learn=0.5.12 \
-        pynndescent=0.5.13 \
-        scikit-learn=1.7.2 \
-        numba=0.65.1 \
-        leidenalg=0.11.0 \
-        python-igraph=1.0.0 \
-    && mamba clean --all -y \
+# Rather than letting pip degrade these and then trying to repair it, use a
+# pip constraints file so pip's resolver isn't ALLOWED to pick a different
+# version for these two specifically. A constraint doesn't force pip to
+# install a package -- it only caps what version pip may choose if it
+# decides to touch one -- so if leidenalg/python-igraph would otherwise be
+# left alone (satisfying harpy-analysis's own >=0.9.1 requirement), nothing
+# changes and no download happens. If some other package in harpy's tree
+# truly requires a different, incompatible version, this makes the build
+# FAIL here with an explicit pip conflict message naming that package,
+# instead of silently shipping the wrong versions for us to discover during
+# a full pipeline run days later.
+RUN printf 'leidenalg==0.11.0\npython-igraph==1.0.0\n' > /tmp/constraints.txt \
+    && pip install --no-cache-dir --constraint /tmp/constraints.txt \
+        anndata==0.11.4 \
+        streamlit==1.58.0 \
+        harpy-analysis==0.3.0 \
     && python -c "\
 import leidenalg, igraph; \
 print('VERSION CHECK: leidenalg=' + leidenalg.version + ' igraph=' + igraph.__version__); \
