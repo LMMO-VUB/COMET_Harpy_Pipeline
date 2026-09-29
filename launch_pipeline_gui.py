@@ -1092,6 +1092,20 @@ class CometLauncherApp(tk.Tk):
         # Copy results from the local staging folder back to the network drive.
         # This must happen regardless of success/failure so partial results are
         # preserved and researchers can inspect them.
+        #
+        # copy_back_error tracks whether this step itself had a problem, kept
+        # separate from Snakemake's own retcode. Found 2026-09-29: a run could
+        # have Snakemake finish cleanly (retcode 0) while this copy-back step
+        # silently failed to bring some or all result files over from the
+        # staging folder (e.g. the MAX_PATH issue fixed in 0d9a802, or a file
+        # locked/in-use, or the network drive dropping mid-copy) -- and
+        # _finish() below would still tell the researcher "Pipeline finished
+        # successfully" with no hint that the results they'd actually look at
+        # might be incomplete or entirely missing from their output folder.
+        # That combination -- a real failure plus a success message -- is
+        # worse than either alone, since it actively tells the researcher not
+        # to look for a problem.
+        copy_back_error: "str | None" = None
         if staging_dir:
             self._log_write("\n[COMET] Copying results back to your output folder…\n")
             self._set_status("⬤  Copying results to network drive…", "#e5c07b")
@@ -1115,20 +1129,33 @@ class CometLauncherApp(tk.Tk):
                         f"[COMET] Warning: {len(errors)} item(s) could not be copied:\n"
                         + "\n".join(f"  {e}" for e in errors) + "\n"
                     )
+                    copy_back_error = (
+                        f"{len(errors)} result item(s) failed to copy from the local "
+                        f"staging folder to your output folder:\n"
+                        + "\n".join(f"  • {e}" for e in errors)
+                    )
                 self._log_write(
                     f"[COMET] Results ({copied} item(s)) copied to:\n"
                     f"        {run_dir}\n"
                 )
             except Exception as exc:
                 self._log_write(f"[COMET] Warning: could not copy results: {exc}\n")
+                copy_back_error = (
+                    f"The results copy-back step itself failed before copying "
+                    f"anything: {exc}"
+                )
 
-        self._finish(retcode)
+        self._finish(retcode, copy_back_error)
 
     def _set_status(self, text: str, color: str) -> None:
         """Update the persistent status bar (thread-safe)."""
         self.after(0, lambda: self._status_lbl.configure(text=text, fg=color))
 
-    def _finish(self, retcode: "int | None") -> None:
+    def _finish(
+        self,
+        retcode: "int | None",
+        copy_back_error: "str | None" = None,
+    ) -> None:
         self._running = False
         self._process = None
         threading.Thread(target=self._check_docker_status, daemon=True).start()
@@ -1136,7 +1163,7 @@ class CometLauncherApp(tk.Tk):
         def _ui() -> None:
             self._launch_btn.configure(state="normal")
             self._stop_btn.configure(state="disabled")
-            if retcode == 0:
+            if retcode == 0 and not copy_back_error:
                 self._log_write("\n[COMET] Pipeline finished successfully.\n")
                 self._set_status("✓  Completed successfully", "#5fba7d")
                 self.title("✓  COMET Pipeline — Done")
@@ -1146,11 +1173,51 @@ class CometLauncherApp(tk.Tk):
                 except Exception:
                     pass
                 messagebox.showinfo("Done", "The COMET pipeline completed successfully!")
+            elif retcode == 0 and copy_back_error:
+                # Snakemake itself succeeded, but the separate copy-back step
+                # (staging folder -> your output folder) did not -- so what's
+                # actually sitting in your output folder may be incomplete or
+                # missing entirely. Deliberately NOT calling this "success":
+                # the whole point of this branch is to never again tell a
+                # researcher a run succeeded when the results they'd look for
+                # might not be there.
+                msg = (
+                    "\n[COMET] ⚠  Pipeline finished, but copying results to your "
+                    "output folder had problems:\n"
+                    f"{copy_back_error}\n"
+                    "Check your output folder before trusting these results are "
+                    "complete.\n"
+                )
+                self._log_write(msg)
+                self._set_status(
+                    "⚠  Finished with copy errors — check your output folder",
+                    "#e5c07b",
+                )
+                self.title("⚠  COMET Pipeline — Copy errors")
+                try:
+                    import winsound
+                    winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+                except Exception:
+                    pass
+                messagebox.showwarning(
+                    "Finished with copy errors",
+                    "The pipeline itself finished, but copying results from the "
+                    "local staging folder to your output folder ran into "
+                    "problems:\n\n"
+                    f"{copy_back_error}\n\n"
+                    "Check your output folder and the Pipeline Log before "
+                    "trusting these results are complete.",
+                )
             elif retcode is not None:
                 msg = (
                     f"\n[COMET] ✖  Pipeline failed (exit code {retcode}).\n"
                     "Check the log above for details.\n"
                 )
+                if copy_back_error:
+                    msg += (
+                        "[COMET] Also, copying results to your output folder had "
+                        f"problems:\n{copy_back_error}\n"
+                    )
                 self._log_write(msg)
                 self._set_status(
                     f"✖  Failed (exit code {retcode}) — see log above for the error",
