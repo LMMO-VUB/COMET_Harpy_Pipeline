@@ -50,3 +50,16 @@ pca_dims: 5
 #   is 0.3 - 1.0. Start at 0.5 and re-run with a different value if the
 #   clusters look too coarse or too fragmented in the UMAP plots.
 clustering_resolution: 0.5
+
+# streamlit_port: local port the interactive annotation portal runs on.
+# Change this if 8501 is already in use on your machine. Defaults to
+# 8501 if omitted.
+streamlit_port: 8501
+
+# skip_annotation_portal: set to true to skip the interactive annotation
+# portal entirely and auto-assign each cell's "cell_type" directly from
+# its Leiden cluster ID (cluster "3" -> cell type "3"), with no manual
+# review step. Useful for a quick/automated first pass; you lose the
+# chance to name clusters with real biological cell-type labels this way.
+# Defaults to false (portal opens) if omitted.
+skip_annotation_portal: false

@@ -14,6 +14,7 @@ output_directory      = config["output_directory"]
 pca_dims              = int(config["pca_dims"])
 clustering_resolution = float(config["clustering_resolution"])
 streamlit_port        = int(config.get("streamlit_port", 8501))
+skip_annotation_portal = bool(config.get("skip_annotation_portal", False))
 
 # Absolute path to the pipeline folder (where this Snakefile lives).
 # Passed into run: blocks so app.py is always found, whether running inside
@@ -746,54 +747,78 @@ rule annotate_clusters:
 		import subprocess
 		import time
 
-		print("\n" + "=" * 60)
-		print("PIPELINE PAUSED: LAUNCHING INTERACTIVE ANNOTATION PORTAL")
-		print(f"Open http://localhost:{streamlit_port} in your browser.")
-		print("Complete annotations and click 'Finalize' to resume.")
-		print("=" * 60 + "\n")
-
-		# Locate app.py relative to this Snakefile so the path works both
-		# inside Docker (/pipeline/app.py) and locally on macOS.
-		app_path = os.path.join(PIPELINE_DIR, "app.py")
-		if not os.path.exists(app_path):
-			raise FileNotFoundError(
-				"app.py not found at '{}'. "
-				"Ensure app.py is in the same folder as this Snakefile.".format(app_path)
+		if skip_annotation_portal:
+			# The researcher opted out of the manual review step (GUI checkbox
+			# "Skip annotation portal", config.yaml's skip_annotation_portal).
+			# Auto-assign cell_type = leiden_clusters directly, replicating
+			# exactly what app.py's "Finalize" button does for an identity
+			# mapping (cluster "3" -> cell type "3"), just without a human
+			# picking real cell-type names per cluster. Anyone downstream
+			# reading "cell_type" still gets a valid categorical column to
+			# group/plot by -- it's just the raw Leiden cluster ID as a
+			# string instead of a biological label.
+			import scanpy as sc
+			print("\n" + "=" * 60)
+			print("skip_annotation_portal is set -- auto-assigning cell_type")
+			print("directly from leiden_clusters (no manual review).")
+			print("=" * 60 + "\n")
+			sys.stdout.flush()
+			adata = sc.read_h5ad(input.h5ad)
+			adata.obs["cell_type"] = (
+				adata.obs["leiden_clusters"].astype(str).astype("category")
 			)
+			adata.write_h5ad(output.annotated_h5ad)
+			print("Auto-annotation complete. Resuming pipeline ...")
+			sys.stdout.flush()
+		else:
+			print("\n" + "=" * 60)
+			print("PIPELINE PAUSED: LAUNCHING INTERACTIVE ANNOTATION PORTAL")
+			print(f"Open http://localhost:{streamlit_port} in your browser.")
+			print("Complete annotations and click 'Finalize' to resume.")
+			print("=" * 60 + "\n")
 
-		cmd = [
-			"streamlit", "run", app_path,
-			"--server.address=0.0.0.0",
-			"--server.port={}".format(streamlit_port),
-			"--server.headless=true",
-			"--",
-			"--input",   input.h5ad,
-			"--output",  output.annotated_h5ad,
-			"--img_dir", "{}/images".format(output_directory),
-		]
-
-		process = subprocess.Popen(cmd)
-
-		# Block Snakemake until the researcher saves annotations. There is no
-		# timeout here by design -- annotation is a manual step that can take
-		# however long it takes -- but print an occasional heartbeat so the log
-		# (and the Windows GUI, which mirrors this log) makes clear the pipeline
-		# is still just waiting on the researcher, not hung.
-		_wait_elapsed = 0
-		_heartbeat_every = 300  # seconds
-		while not os.path.exists(output.annotated_h5ad):
-			time.sleep(2)
-			_wait_elapsed += 2
-			if _wait_elapsed % _heartbeat_every == 0:
-				print(
-					"[COMET] Still waiting on annotation portal "
-					f"(http://localhost:{streamlit_port}) -- {_wait_elapsed // 60} min elapsed."
+			# Locate app.py relative to this Snakefile so the path works both
+			# inside Docker (/pipeline/app.py) and locally on macOS.
+			app_path = os.path.join(PIPELINE_DIR, "app.py")
+			if not os.path.exists(app_path):
+				raise FileNotFoundError(
+					"app.py not found at '{}'. "
+					"Ensure app.py is in the same folder as this Snakefile.".format(app_path)
 				)
-				sys.stdout.flush()
 
-		print("\nAnnotations saved. Resuming pipeline ...")
-		process.terminate()
-		process.wait()
+			cmd = [
+				"streamlit", "run", app_path,
+				"--server.address=0.0.0.0",
+				"--server.port={}".format(streamlit_port),
+				"--server.headless=true",
+				"--",
+				"--input",   input.h5ad,
+				"--output",  output.annotated_h5ad,
+				"--img_dir", "{}/images".format(output_directory),
+			]
+
+			process = subprocess.Popen(cmd)
+
+			# Block Snakemake until the researcher saves annotations. There is no
+			# timeout here by design -- annotation is a manual step that can take
+			# however long it takes -- but print an occasional heartbeat so the log
+			# (and the Windows GUI, which mirrors this log) makes clear the pipeline
+			# is still just waiting on the researcher, not hung.
+			_wait_elapsed = 0
+			_heartbeat_every = 300  # seconds
+			while not os.path.exists(output.annotated_h5ad):
+				time.sleep(2)
+				_wait_elapsed += 2
+				if _wait_elapsed % _heartbeat_every == 0:
+					print(
+						"[COMET] Still waiting on annotation portal "
+						f"(http://localhost:{streamlit_port}) -- {_wait_elapsed // 60} min elapsed."
+					)
+					sys.stdout.flush()
+
+			print("\nAnnotations saved. Resuming pipeline ...")
+			process.terminate()
+			process.wait()
 
 
 rule post_annotation_viz:

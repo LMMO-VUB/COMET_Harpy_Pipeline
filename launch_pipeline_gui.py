@@ -188,6 +188,97 @@ def _win_long_path(path: str) -> str:
     return "\\\\?\\" + path
 
 
+def _project_name_length_warning(project_name: str, base_dir: str) -> "str | None":
+    """
+    Returns a warning message if this project name would likely produce
+    paths beyond Windows' classic 260-character MAX_PATH limit under
+    base_dir (the local folder Docker will actually write into -- the
+    staging folder on a network-drive run, or run_dir otherwise), or None
+    if it looks safe.
+
+    _win_long_path() (above) works around this after the fact for the
+    results copy-back step, but it can't help every tool in the chain --
+    Docker/Snakemake write these files from inside a Linux container,
+    where a long path is no problem at all, so the failure only surfaces
+    on the Windows side. Catching an unsafe name at launch, before any
+    work happens, is better than a run finishing "successfully" hours
+    later with some result files silently missing.
+
+    This mirrors the pipeline's own naming convention, which repeats the
+    full project name inside its results folder and again inside every
+    output filename -- "<project>_results/<project>_annotated_seurat.rds"
+    is the longest real one -- and Snakemake's own .snakemake/metadata/
+    files base64-encode that whole relative path, expanding it by roughly
+    4/3. This is a heuristic estimate, not an exact simulation of
+    Snakemake's own naming, but it reproduces the exact failure confirmed
+    2026-09-29 with project name
+    "MO_Ellis-TMA_ASCP_TMA_ASCP-1_background_substracted_feature_table_core1".
+    """
+    longest_output_rel = f"{project_name}_results/{project_name}_annotated_seurat.rds"
+    metadata_rel_estimate_len = len(".snakemake/metadata/") + (
+        (len(longest_output_rel) + 2) // 3 * 4
+    )
+    worst_rel_len = max(len(longest_output_rel), metadata_rel_estimate_len)
+    worst_total_len = len(os.path.join(base_dir, "")) + worst_rel_len
+
+    LIMIT = 260
+    SAFETY_MARGIN = 10
+    if worst_total_len > LIMIT - SAFETY_MARGIN:
+        return (
+            f"This project name is likely too long for Windows.\n\n"
+            f"Estimated worst-case path length under this run's data folder: "
+            f"~{worst_total_len} characters (Windows' classic limit is {LIMIT}).\n\n"
+            f"The pipeline repeats the full project name inside its own results "
+            f"folder and output filenames, e.g.:\n"
+            f"  {project_name}_results\\{project_name}_annotated_seurat.rds\n\n"
+            f"A project name this long has previously caused result files to "
+            f"silently fail to save, even though the pipeline reported success.\n\n"
+            f"Please shorten the project name above before launching."
+        )
+    return None
+
+
+def _sync_intermediate_results(staging_dir: str, run_dir: str) -> None:
+    """
+    Copy whatever result folders exist so far from the local staging folder
+    to the user's real output folder, without removing anything already
+    there (dirs_exist_ok=True merges rather than replaces).
+
+    This only matters on a network-drive run, where Docker actually writes
+    into a local staging folder (see needs_staging in _on_launch) and
+    everything is copied back to the network drive in one shot only after
+    the whole pipeline finishes. Until now, that meant a researcher
+    watching the output folder saw nothing at all -- no plots, no
+    intermediate .h5ad files -- until the entire run (which can take
+    hours) completed or failed. Calling this periodically while the
+    container is still running lets people check on progress (e.g. QC
+    plots from an early rule) without waiting for the end, and means a
+    crash partway through still leaves whatever was produced up to that
+    point on the network drive, not stranded in a local staging folder the
+    researcher may not know exists.
+
+    Deliberately silent on any error (a file the pipeline is mid-write to
+    can easily fail a single copy) -- this is a best-effort progress sync,
+    not the authoritative copy-back, which still runs once at the end
+    (see _docker_thread) and is the one that surfaces real errors.
+    """
+    try:
+        for item in os.listdir(_win_long_path(staging_dir)):
+            src_path = _win_long_path(os.path.join(staging_dir, item))
+            dst_path = _win_long_path(os.path.join(run_dir, item))
+            if not os.path.isdir(src_path):
+                # Only sync result folders while the run is live -- loose
+                # files (config.yaml, the input CSV, etc.) aren't results
+                # and copying them repeatedly adds nothing.
+                continue
+            try:
+                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -206,6 +297,7 @@ def _write_config(
     pca_dims: int,
     resolution: float,
     port: int,
+    skip_annotation_portal: bool = False,
 ) -> str:
     output_dir = f"{project_name}_results"
     content = (
@@ -218,6 +310,7 @@ def _write_config(
         f"pca_dims: {pca_dims}\n"
         f"clustering_resolution: {resolution}\n"
         f"streamlit_port: {port}\n"
+        f"skip_annotation_portal: {'true' if skip_annotation_portal else 'false'}\n"
     )
     config_path = os.path.join(run_dir, "config.yaml")
     with open(config_path, "w", encoding="utf-8") as fh:
@@ -441,6 +534,22 @@ class CometLauncherApp(tk.Tk):
                   foreground=T_HINT, font=("Helvetica", 10)).grid(
             row=2, column=2, sticky="w", pady=(10, 0))
 
+        # Default False (unchecked): the annotation portal opens as before.
+        # Checking this skips it entirely and auto-assigns each cell's
+        # "cell_type" straight from its Leiden cluster ID -- no manual
+        # review, no waiting on a person. Useful for a quick/automated
+        # first pass; real biological cell-type names still require the
+        # portal.
+        self._skip_portal_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            param_lf,
+            text="Skip annotation portal (auto-assign cell type = Leiden cluster ID)",
+            variable=self._skip_portal_var,
+        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(param_lf, text="No manual review — clusters keep numeric IDs, not real cell-type names",
+                  foreground=T_HINT, font=("Helvetica", 10)).grid(
+            row=3, column=2, sticky="w", pady=(10, 0))
+
         param_lf.columnconfigure(2, weight=1)
 
         # ── Log ──────────────────────────────────────────────────────────────
@@ -574,6 +683,19 @@ class CometLauncherApp(tk.Tk):
 
         run_dir = out_folder
         os.makedirs(run_dir, exist_ok=True)
+
+        # Catch a project name likely to blow past Windows' MAX_PATH before
+        # doing any real work. Check both candidate data folders Docker might
+        # actually write into: run_dir itself, and the local staging folder
+        # that gets used instead whenever run_dir turns out to be a network
+        # drive (the common case, and the one that actually failed before).
+        local_app_guess = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        predicted_staging = os.path.join(local_app_guess, "COMET", f"{project_name}_{port}")
+        for candidate_base in (run_dir, predicted_staging):
+            length_warning = _project_name_length_warning(project_name, candidate_base)
+            if length_warning:
+                messagebox.showerror("Project name too long", length_warning)
+                return
 
         # ── Determine the folder Docker will actually mount as /data ─────────
         #
@@ -715,10 +837,13 @@ class CometLauncherApp(tk.Tk):
                         f"        ({metadata_dst}) and will be reused as-is.\n\n"
                     )
 
+        skip_annotation_portal = bool(self._skip_portal_var.get())
+
         try:
             cfg = _write_config(
                 data_dir_for_csv, project_name, os.path.basename(csv_abs),
                 pca_dims, resolution, port,
+                skip_annotation_portal=skip_annotation_portal,
             )
         except OSError as exc:
             messagebox.showerror("Config write failed", str(exc))
@@ -728,9 +853,17 @@ class CometLauncherApp(tk.Tk):
         if staging_dir:
             try:
                 _write_config(run_dir, project_name, os.path.basename(csv_abs),
-                              pca_dims, resolution, port)
+                              pca_dims, resolution, port,
+                              skip_annotation_portal=skip_annotation_portal)
             except OSError:
                 pass  # non-fatal — the staging copy is what Docker uses
+
+        if skip_annotation_portal:
+            self._log_write(
+                "[COMET] Skip-annotation-portal is ON — cell_type will be "
+                "auto-assigned directly from leiden_clusters, with no manual\n"
+                "        review step.\n\n"
+            )
 
         self._log_write(f"[COMET] Config written → {cfg}\n")
         self._log_write(f"[COMET] Run folder     → {run_dir}\n\n")
@@ -901,6 +1034,24 @@ class CometLauncherApp(tk.Tk):
             self._finish(None)
             return
 
+        # Periodically copy whatever result folders exist so far from the
+        # local staging folder to the researcher's real output folder, so
+        # they can check on progress (plots, intermediate .h5ad files)
+        # without waiting for the whole run to finish, and so a crash
+        # partway through doesn't strand everything produced up to that
+        # point in a local staging folder. Only relevant on a network-drive
+        # run (staging_dir is None otherwise). Stopped just before the
+        # final, authoritative copy-back below.
+        sync_stop_event: "threading.Event | None" = None
+        if staging_dir:
+            sync_stop_event = threading.Event()
+
+            def _sync_loop(stop_event: threading.Event = sync_stop_event) -> None:
+                while not stop_event.wait(30):
+                    _sync_intermediate_results(staging_dir, run_dir)
+
+            threading.Thread(target=_sync_loop, daemon=True).start()
+
         # Noise patterns: Streamlit deprecation warnings that spam the log on every
         # page refresh.  Filter them out before writing to the GUI so the log stays
         # readable and the Tkinter event queue doesn't get flooded.
@@ -930,6 +1081,13 @@ class CometLauncherApp(tk.Tk):
                 ).start()
 
         retcode = self._process.wait()
+
+        # Stop the periodic progress sync before the final, authoritative
+        # copy-back -- no point racing two copies of the same folders, and
+        # this way any error below is unambiguously from the real,
+        # complete copy rather than an in-progress partial one.
+        if sync_stop_event is not None:
+            sync_stop_event.set()
 
         # Copy results from the local staging folder back to the network drive.
         # This must happen regardless of success/failure so partial results are
