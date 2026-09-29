@@ -156,6 +156,38 @@ def _resolve_docker_path(path: str) -> str:
     return mapped
 
 
+def _win_long_path(path: str) -> str:
+    """
+    Prefix a Windows path with \\\\?\\ (or \\\\?\\UNC\\ for a UNC path) so the
+    Win32 file APIs Python calls under the hood allow it to exceed the
+    classic 260-character MAX_PATH limit.
+
+    Found 2026-09-29: this project's own naming convention repeats the full
+    project name inside its results folder and filenames (e.g.
+    "<project>_results\\<project>_annotated_seurat.rds"), and Snakemake's
+    own per-output bookkeeping under .snakemake/metadata/ uses long
+    base64-encoded names derived from the full relative output path. With a
+    sufficiently long project name (confirmed with
+    "MO_Ellis-TMA_ASCP_TMA_ASCP-1_background_substracted_feature_table_core1"),
+    stacking the staging-folder prefix on top of these routinely pushes the
+    resulting path past 260 characters. Windows' classic file APIs then
+    refuse to open the file at all and report it as "No such file or
+    directory", even though it exists and its contents are intact --
+    confirmed this silently dropped real result files (an annotated .h5ad
+    and a Seurat .rds) from the copy-back-to-network-drive step, while the
+    GUI still reported "Pipeline finished successfully" since that only
+    reflects Snakemake's own exit code, not this copy step.
+
+    No-op on non-Windows or a path that's already prefixed.
+    """
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    path = os.path.abspath(path)
+    if path.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -907,9 +939,9 @@ class CometLauncherApp(tk.Tk):
             self._set_status("⬤  Copying results to network drive…", "#e5c07b")
             try:
                 copied, errors = 0, []
-                for item in os.listdir(staging_dir):
-                    src_path = os.path.join(staging_dir, item)
-                    dst_path = os.path.join(run_dir, item)
+                for item in os.listdir(_win_long_path(staging_dir)):
+                    src_path = _win_long_path(os.path.join(staging_dir, item))
+                    dst_path = _win_long_path(os.path.join(run_dir, item))
                     try:
                         if os.path.isdir(src_path):
                             if os.path.exists(dst_path):
