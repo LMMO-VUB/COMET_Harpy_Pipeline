@@ -806,35 +806,54 @@ class CometLauncherApp(tk.Tk):
                     except OSError as exc:
                         messagebox.showerror("File copy failed", str(exc))
                         return
+
+                    # Also stage the ".source" fingerprint sidecar the
+                    # Snakefile writes next to metadata_markers.csv (see its
+                    # stale-metadata check added 2026-10-02), if this run
+                    # folder already has one from a previous run. Without
+                    # this, the staging folder would always look like it has
+                    # no recorded fingerprint, so a run here could never
+                    # actually detect a stale metadata_markers.csv -- the one
+                    # case (network-drive Windows runs) this fix most needs
+                    # to cover, since staging is exactly where a stale file
+                    # was confirmed to linger across runs under the same
+                    # project name.
+                    fp_src = metadata_src + ".source"
+                    fp_dst = metadata_dst + ".source"
+                    if os.path.exists(fp_src):
+                        try:
+                            shutil.copy2(fp_src, fp_dst)
+                        except OSError:
+                            pass  # non-fatal -- worst case, treated as "no sidecar" below
             else:
-                # This project folder has no metadata_markers.csv of its own.
-                # Found 2026-09-25: staying silent here is exactly what let
-                # this whole bug hide for who knows how many runs -- Docker's
-                # entrypoint falls back to a bundled placeholder marker list
-                # in this case (or, worse, a WRONG file already left over
-                # from an earlier staged run keeps getting silently reused,
-                # since this step never had anything of its own to copy over
-                # it). Make this loud in the GUI log itself, not just in
-                # Docker's build output, since that's what people actually
-                # watch while a run is going.
+                # This project folder has no metadata_markers.csv of its own
+                # yet. As of 2d204bf, the pipeline no longer falls back to a
+                # generic placeholder marker list in this case -- the
+                # Snakefile auto-generates a real one from this run's actual
+                # HALO_data_file and pauses so you can review it (see
+                # metadata_file's description in config.yaml). This is just
+                # letting you know that's about to happen rather than
+                # something already going wrong.
                 self._log_write(
-                    f"[COMET] !!! WARNING: no metadata_markers.csv found in your\n"
-                    f"        run folder ({run_dir}).\n"
-                    f"        The pipeline will fall back to a placeholder marker\n"
-                    f"        list that almost certainly does NOT match this\n"
-                    f"        dataset's real marker panel. Put this project's own\n"
-                    f"        metadata_markers.csv in the run folder and re-run\n"
-                    f"        before trusting these results.\n\n"
+                    f"[COMET] No metadata_markers.csv found in your run folder\n"
+                    f"        ({run_dir}).\n"
+                    f"        The pipeline will auto-generate one from this run's\n"
+                    f"        actual data and pause so you can review it -- this\n"
+                    f"        is expected for a new project.\n\n"
                 )
-                # If an earlier run already staged a (possibly wrong) file
-                # here, leave it alone rather than deleting it blind -- but
-                # make sure it's at least visible that we're not the ones
-                # who put it there this time.
+                # If an earlier run already staged a metadata_markers.csv here
+                # (e.g. a previous launch of this same project name), leave it
+                # alone rather than deleting it blind -- the Snakefile itself
+                # now checks whether it actually matches THIS run's CSV (via
+                # the ".source" fingerprint sidecar) and automatically backs
+                # it up and regenerates if it's stale, so this no longer needs
+                # to be treated as a silent risk here.
                 if os.path.exists(metadata_dst):
                     self._log_write(
                         f"[COMET] Note: a metadata_markers.csv already exists in\n"
                         f"        the staging folder from a previous run\n"
-                        f"        ({metadata_dst}) and will be reused as-is.\n\n"
+                        f"        ({metadata_dst}). The pipeline will check whether\n"
+                        f"        it actually matches this run's data before reusing it.\n\n"
                     )
 
         skip_annotation_portal = bool(self._skip_portal_var.get())

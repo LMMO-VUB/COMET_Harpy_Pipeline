@@ -1,5 +1,8 @@
 
 import os
+import hashlib
+import json
+import time
 
 #####################################
 ### Load Configurations
@@ -15,6 +18,14 @@ pca_dims              = int(config["pca_dims"])
 clustering_resolution = float(config["clustering_resolution"])
 streamlit_port        = int(config.get("streamlit_port", 8501))
 skip_annotation_portal = bool(config.get("skip_annotation_portal", False))
+
+# strict_marker_matching: see the "Match metadata rows to data columns" step
+# in rule process_halo. Defaults to True -- any metadata_markers.csv row that
+# doesn't match a column in this run's actual HALO_data_file is treated as an
+# error, not a skip-with-warning. Only set to False if you deliberately keep
+# a superset marker panel where some rows are expected to be absent from any
+# given export.
+strict_marker_matching = bool(config.get("strict_marker_matching", True))
 
 # Absolute path to the pipeline folder (where this Snakefile lives).
 # Passed into run: blocks so app.py is always found, whether running inside
@@ -44,34 +55,176 @@ os.environ["NUMEXPR_NUM_THREADS"]    = "1"
 os.environ["NUMBA_NUM_THREADS"]      = "1"
 
 ######################################
-### Auto-generate metadata_markers.csv if absent.
+### Auto-generate metadata_markers.csv if absent -- and detect a STALE one
+### left over from a different export.
+###
+### Found 2026-10-02: a run folder (or, on a network-drive Windows run, the
+### local staging folder -- see launch_pipeline_gui.py's needs_staging path)
+### can end up with a metadata_markers.csv that was auto-generated for an
+### EARLIER, DIFFERENT HALO/Horizon export (e.g. a different TMA core, or a
+### re-export with a changed marker panel), most commonly when the same
+### project name is reused for a new input file. The old "if not exists"
+### check below has no way to tell "a real metadata_markers.csv is already
+### here, reuse it" apart from "a stale one from a different file is already
+### here, reuse it" -- both just look like "the file exists". Reusing a
+### stale one doesn't fail loudly: rule process_halo's marker-matching step
+### (further down) only warns and skips a marker it can't find a matching
+### column for, so the pipeline happily runs to completion using whatever
+### subset of a WRONG marker panel happens to coincidentally match, and
+### reports success.
+###
+### Fix: alongside metadata_file, keep a small sidecar
+### "<metadata_file>.source" recording which HALO_data_file (by name and a
+### fingerprint of its header row) it was generated from. On every run:
+###   - metadata_file missing            -> generate fresh (as before).
+###   - metadata_file present, sidecar's fingerprint matches this run's
+###     HALO_data_file                   -> reuse as-is, unchanged behavior
+###     (this is what lets someone review/correct metadata_markers.csv once
+###     and then re-run the SAME dataset with different pca_dims/
+###     clustering_resolution without redoing that review each time).
+###   - metadata_file present, no sidecar -> can't tell if it's stale (e.g.
+###     a project that predates this check, or a hand-written file); use it
+###     as-is to avoid disrupting an established project, but start
+###     recording a fingerprint now so future runs in this same folder are
+###     protected.
+###   - metadata_file present, sidecar fingerprint does NOT match -> STALE.
+###     Back the old file up (so nothing is lost) and regenerate fresh from
+###     THIS run's actual HALO_data_file, exactly as if it had been absent.
+###
 ### Runs at Snakefile parse time — works whether the pipeline is launched
 ### via RUN_COMET_PIPELINE.BAT on Windows or `snakemake` directly on macOS.
 ######################################
-if not os.path.exists(metadata_file):
+
+def _csv_header_fingerprint(csv_path):
+	"""
+	Cheap fingerprint of a CSV's header row (just the first line), used only
+	to detect "is this a different export than before" -- not to validate
+	its contents. Tries the same encodings generate_metadata.py does, since
+	HALO/Horizon exports are often not plain UTF-8.
+	"""
+	first_line = ""
+	for enc in ("utf-8-sig", "cp1252", "latin-1"):
+		try:
+			with open(csv_path, "r", encoding=enc, newline="") as fh:
+				first_line = fh.readline()
+			break
+		except (UnicodeDecodeError, LookupError, OSError):
+			continue
+	normalized = first_line.replace('"', "").strip()
+	return hashlib.sha256(normalized.encode("utf-8", errors="ignore")).hexdigest()
+
+
+def _metadata_fingerprint_path(meta_path):
+	return meta_path + ".source"
+
+
+def _read_metadata_fingerprint(meta_path):
 	try:
-		import sys
-		if PIPELINE_DIR not in sys.path:
-			sys.path.insert(0, PIPELINE_DIR)
-		from generate_metadata import generate_from_csv
-		print(
-			"\n[COMET] '{}' not found — auto-generating from '{}' ...".format(
-				metadata_file, HALO_data_file
+		with open(_metadata_fingerprint_path(meta_path), "r", encoding="utf-8") as fh:
+			return json.load(fh)
+	except Exception:
+		return None
+
+
+def _write_metadata_fingerprint(meta_path, csv_path):
+	try:
+		with open(_metadata_fingerprint_path(meta_path), "w", encoding="utf-8") as fh:
+			json.dump(
+				{
+					"source_csv": os.path.basename(csv_path),
+					"header_fingerprint": _csv_header_fingerprint(csv_path),
+				},
+				fh,
 			)
-		)
-		generate_from_csv(HALO_data_file, metadata_file)
+	except OSError as exc:
 		print(
-			"[COMET] Done. Please open '{}' and confirm the "
-			"type/localization columns before proceeding.\n".format(metadata_file)
+			"[COMET] Warning: could not write metadata fingerprint file "
+			"for '{}': {}".format(meta_path, exc)
 		)
+
+
+def _generate_metadata_markers(csv_path, meta_path):
+	import sys
+	if PIPELINE_DIR not in sys.path:
+		sys.path.insert(0, PIPELINE_DIR)
+	from generate_metadata import generate_from_csv
+	try:
+		generate_from_csv(csv_path, meta_path)
 	except ImportError:
 		raise FileNotFoundError(
 			"'{}' not found and generate_metadata.py is not available "
 			"in the pipeline directory. Either create metadata_markers.csv "
 			"manually or add generate_metadata.py to the pipeline folder.".format(
+				meta_path
+			)
+		)
+	_write_metadata_fingerprint(meta_path, csv_path)
+
+
+if not os.path.exists(metadata_file):
+	print(
+		"\n[COMET] '{}' not found — auto-generating from '{}' ...".format(
+			metadata_file, HALO_data_file
+		)
+	)
+	_generate_metadata_markers(HALO_data_file, metadata_file)
+	print(
+		"[COMET] Done. Please open '{}' and confirm the "
+		"type/localization columns before proceeding.\n".format(metadata_file)
+	)
+else:
+	_recorded_fp = _read_metadata_fingerprint(metadata_file)
+	if _recorded_fp is None:
+		print(
+			"[COMET] Note: '{}' exists but has no recorded source-file "
+			"fingerprint (likely from before this check existed, or "
+			"written by hand). Using it as-is, and recording its "
+			"fingerprint now so a future run in this same folder can "
+			"detect if a different export is used here later.\n".format(
 				metadata_file
 			)
 		)
+		_write_metadata_fingerprint(metadata_file, HALO_data_file)
+	elif _recorded_fp.get("header_fingerprint") != _csv_header_fingerprint(HALO_data_file):
+		_stale_backup = "{}.stale_{}".format(metadata_file, time.strftime("%Y%m%d_%H%M%S"))
+		print("\n" + "=" * 60)
+		print("[COMET] !!! STALE metadata_markers.csv detected")
+		print(
+			"        '{}' was generated from '{}',".format(
+				metadata_file, _recorded_fp.get("source_csv", "an earlier export")
+			)
+		)
+		print(
+			"        not this run's HALO_data_file ('{}').".format(
+				os.path.basename(HALO_data_file)
+			)
+		)
+		print("        Reusing it would silently apply the wrong marker panel to")
+		print("        this data (confirmed 2026-10-02 as a real failure mode).")
+		print("        Backing it up to:")
+		print("          {}".format(_stale_backup))
+		print("        and regenerating fresh from this run's actual data.")
+		print("=" * 60 + "\n")
+		try:
+			os.replace(metadata_file, _stale_backup)
+		except OSError as exc:
+			raise RuntimeError(
+				"Detected a stale metadata_markers.csv (generated from '{}', "
+				"not this run's '{}') but could not back it up to '{}': {}. "
+				"Please rename or delete metadata_markers.csv by hand and "
+				"re-run.".format(
+					_recorded_fp.get("source_csv", "?"),
+					os.path.basename(HALO_data_file),
+					_stale_backup,
+					exc,
+				)
+			)
+		_generate_metadata_markers(HALO_data_file, metadata_file)
+		print(
+			"[COMET] Done. Please open '{}' and confirm the "
+			"type/localization columns before proceeding.\n".format(metadata_file)
+		)
+	# else: fingerprint matches this run's HALO_data_file -- reuse as-is.
 
 
 ######################################
@@ -424,8 +577,9 @@ rule process_halo:
 			matches = sorted(c for c in columns if pat.search(c))
 			return matches[-1] if matches else None
 
-		matched_rows    = []
-		matched_columns = []
+		matched_rows      = []
+		matched_columns   = []
+		unmatched_markers = []
 		for _, row in markers_df.iterrows():
 			col = find_marker_column(
 				df.columns, row["channel"], row["type"], row["localization"], input_format
@@ -437,9 +591,35 @@ rule process_halo:
 						input.csv, row["channel"], row["type"], row["localization"]
 					)
 				)
+				unmatched_markers.append(row["channel"])
 				continue
 			matched_rows.append(row)
 			matched_columns.append(col)
+
+		# Found 2026-10-02: a metadata_markers.csv left over from a different
+		# export (a stale file from an earlier run -- see the auto-generation
+		# block near the top of this file, which now backs up and regenerates
+		# a stale file automatically) used to only trigger the print warning
+		# above and otherwise run to completion with whatever partial subset
+		# of markers happened to coincidentally match, silently reporting
+		# success with the wrong marker panel. strict_marker_matching (config
+		# option, default True) turns any unmatched marker into a hard error
+		# instead, so a mismatch can never again pass as a quiet success.
+		if unmatched_markers and strict_marker_matching:
+			raise ValueError(
+				"{} marker(s) in '{}' did not match any column in '{}' "
+				"(detected format: {}): {}. This usually means "
+				"metadata_markers.csv does not correspond to this run's "
+				"HALO_data_file (e.g. a stale file from a previous, "
+				"different export) -- check metadata_markers.csv.source next "
+				"to it, or inspect it for leftover channel names not in this "
+				"data. To proceed anyway with only the matching markers, set "
+				"strict_marker_matching: false in config.yaml (not "
+				"recommended).".format(
+					len(unmatched_markers), input.meta, input.csv, input_format,
+					", ".join(unmatched_markers),
+				)
+			)
 
 		if not matched_rows:
 			raise ValueError(

@@ -30,6 +30,15 @@ name_of_project: "my_project"
 #   the first time you run it, then STOP so you can review it.
 #   Open it, check every row (especially any the console flagged as
 #   "unknown marker"), fix anything wrong, save, and run again.
+#
+#   The pipeline also keeps a small "<metadata_file>.source" file next to
+#   it, recording which HALO_data_file it was generated from. If you (or
+#   the GUI launcher) reuse this run folder for a DIFFERENT export without
+#   deleting the old metadata_markers.csv, the pipeline detects the
+#   mismatch automatically, backs the old file up (as
+#   "metadata_markers.csv.stale_<timestamp>"), regenerates a fresh one
+#   from the new export, and stops so you can review it again -- instead
+#   of silently continuing with the wrong marker panel.
 metadata_file: "metadata_markers.csv"
 
 # HALO_data_file: your raw per-cell export CSV from HALO or Horizon.
@@ -63,3 +72,14 @@ streamlit_port: 8501
 # chance to name clusters with real biological cell-type labels this way.
 # Defaults to false (portal opens) if omitted.
 skip_annotation_portal: false
+
+# strict_marker_matching: if a row in metadata_markers.csv doesn't match any
+# column in HALO_data_file (most often because metadata_markers.csv is
+# stale -- see the note above, though the pipeline now catches and fixes
+# that case automatically before this would ever trigger), the pipeline
+# stops with an error naming the unmatched marker(s) rather than silently
+# continuing with only the markers that did match. Set to false ONLY if you
+# deliberately keep one metadata_markers.csv covering a superset panel where
+# some rows are legitimately expected to be missing from any given export.
+# Defaults to true if omitted.
+strict_marker_matching: true
