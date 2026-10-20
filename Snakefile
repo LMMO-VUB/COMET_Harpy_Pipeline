@@ -801,14 +801,18 @@ rule process_halo:
 		adata_subset = sdata.table[:, clustering_markers].copy()
 
 		print("Performing PCA")
-		n_comps = min(10, adata_subset.shape[1])
+		# scanpy's default arpack solver needs n_comps strictly LESS than
+		# min(n_cells, n_features), so a 10-marker panel can't use 10 PCs.
+		n_comps = max(1, min(10, adata_subset.shape[1] - 1, adata_subset.shape[0] - 1))
 		sc.tl.pca(adata_subset, n_comps=n_comps)
 		sc.pl.pca_variance_ratio(adata_subset, n_pcs=n_comps, show=False)
 		plt.savefig("{}/images/pca_elbowPlot.png".format(output_directory), bbox_inches="tight")
 		plt.close()
 
 		print("Finding Neighbors")
-		sc.pp.neighbors(adata_subset, n_pcs=pca_dims)
+		if pca_dims > n_comps:
+			print(f"Note: pca_dims={pca_dims} exceeds available PCs; using {n_comps}.")
+		sc.pp.neighbors(adata_subset, n_pcs=min(pca_dims, n_comps))
 		print("Performing UMAP")
 		sc.tl.umap(adata_subset)
 
