@@ -338,6 +338,22 @@ def _docker_is_running() -> bool:
         return False
 
 
+# Image tag docker-compose.yml builds/uses (its `image:` line).
+_IMAGE_NAME = "spatial_pipeline:v1"
+
+
+def _docker_image_exists(name: str) -> bool:
+    """True if a local image with this tag already exists."""
+    try:
+        r = subprocess.run(
+            ["docker", "image", "inspect", name],
+            capture_output=True, timeout=15, **_popen_kwargs(),
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _find_docker_desktop() -> "str | None":
     for path in _DOCKER_DESKTOP_CANDIDATES:
         if path and os.path.isfile(path):
@@ -1024,11 +1040,34 @@ class CometLauncherApp(tk.Tk):
 
         # --exit-code-from makes docker compose return the container's exit code.
         # Without it, docker compose up always returns 0 even if the container fails.
-        cmd = [
-            "docker", "compose", "-f", COMPOSE_FILE,
-            "up", "--build",
-            "--exit-code-from", "comet_pipeline",
-        ]
+        #
+        # Only build when the image is missing. The Dockerfile has no COPY --
+        # the pipeline code is mounted at /pipeline, not baked in -- so an
+        # existing image never needs rebuilding just because code changed.
+        # Always passing --build (the previous behavior) meant any loss of
+        # Docker's build cache (a Docker Desktop reset or prune, or an image
+        # that was loaded from a .tar rather than built here) turned a normal
+        # launch into a full multi-GB reinstall from PyPI/conda, and a
+        # network stall in that step hung the whole run (confirmed
+        # 2026-10-20: a launch sat for over an hour at "Downloading
+        # streamlit" even though a working spatial_pipeline:v1 already
+        # existed). To force a rebuild after changing the Dockerfile, run
+        # `docker compose build` in the pipeline folder (or `docker rmi
+        # spatial_pipeline:v1`) and then launch again.
+        cmd = ["docker", "compose", "-f", COMPOSE_FILE, "up"]
+        if _docker_image_exists(_IMAGE_NAME):
+            self._log_write(
+                f"[COMET] Using existing Docker image {_IMAGE_NAME} (no rebuild).\n"
+                "        After editing the Dockerfile, run 'docker compose build' "
+                "in the pipeline folder first.\n\n"
+            )
+        else:
+            self._log_write(
+                f"[COMET] Docker image {_IMAGE_NAME} not found -- building it. "
+                "This can take 10-20 minutes.\n\n"
+            )
+            cmd.append("--build")
+        cmd += ["--exit-code-from", "comet_pipeline"]
 
         try:
             self._process = subprocess.Popen(
