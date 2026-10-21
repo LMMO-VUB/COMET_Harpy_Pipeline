@@ -505,7 +505,16 @@ rule process_halo:
 			df["y"] = pd.to_numeric(df[f"{_hz_pfx}/Y Position in μm"], errors="coerce") / pixel_size
 			# Annotation Index resets per ROI — use global row numbers for a unique id
 			df["Object_Id_Clean"] = np.arange(1, len(df) + 1)
-			df["cell_area_um2"]   = pd.to_numeric(df[f"{_hz_pfx}/Area in μm2"], errors="coerce")
+			# Header spelling varies between exports: "Area in μm2", "Area in μm²",
+			# "Area in µm²" (micro sign) ... so find the column by prefix instead of
+			# requiring one exact spelling.
+			_area_cols = [c for c in df.columns if str(c).startswith(f"{_hz_pfx}/Area in")]
+			if not _area_cols:
+				raise ValueError(
+					f"No '{_hz_pfx}/Area in ...' column found in the Horizon export. "
+					"Cell area is required to size the cell shapes."
+				)
+			df["cell_area_um2"]   = pd.to_numeric(df[_area_cols[0]], errors="coerce")
 
 		else:
 			raise ValueError(
@@ -574,7 +583,9 @@ rule process_halo:
 					)
 
 			# If a marker appears in multiple cycles, keep the last (highest cycle)
-			matches = sorted(c for c in columns if pat.search(c))
+			# Normalise Greek alpha (aSMA exported as "\u03b1SMA") the same way
+			# generate_metadata.py does, so "aSMA" in metadata_markers.csv matches.
+			matches = sorted(c for c in columns if pat.search(str(c).replace("\u03b1", "a")))
 			return matches[-1] if matches else None
 
 		matched_rows      = []
