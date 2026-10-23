@@ -238,6 +238,36 @@ def _project_name_length_warning(project_name: str, base_dir: str) -> "str | Non
     return None
 
 
+def _clear_staging_dir(staging_dir: str) -> "list[str]":
+    """
+    Delete everything inside the local staging folder so a new run can never
+    pick up files (results, .snakemake state, metadata_markers.csv, config)
+    left over from an earlier run. Snakemake skips any step whose output
+    already exists, so a stale <project>.h5ad or images folder would
+    otherwise be reused silently.
+
+    Safety: only ever touches a folder directly inside a "COMET" folder,
+    never the user's real run folder. Returns a list of items that could not
+    be removed (empty list = clean).
+    """
+    failures: "list[str]" = []
+    try:
+        if os.path.basename(os.path.dirname(os.path.normpath(staging_dir))).upper() != "COMET":
+            return [f"refusing to clear unexpected folder: {staging_dir}"]
+        for item in os.listdir(_win_long_path(staging_dir)):
+            path = _win_long_path(os.path.join(staging_dir, item))
+            try:
+                if os.path.isdir(path) and not os.path.islink(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+            except OSError as exc:
+                failures.append(f"{item}: {exc}")
+    except OSError as exc:
+        failures.append(str(exc))
+    return failures
+
+
 def _sync_intermediate_results(staging_dir: str, run_dir: str) -> None:
     """
     Copy whatever result folders exist so far from the local staging folder
@@ -765,6 +795,19 @@ class CometLauncherApp(tk.Tk):
             except OSError as exc:
                 messagebox.showerror("Could not create staging folder", str(exc))
                 return
+            # Always start from an empty staging folder (see _clear_staging_dir).
+            _clear_fail = _clear_staging_dir(staging_dir)
+            if _clear_fail:
+                messagebox.showerror(
+                    "Could not clear staging folder",
+                    "Old files from a previous run could not be removed, and "
+                    "using them could give wrong results:\n\n"
+                    + "\n".join(_clear_fail[:10])
+                    + "\n\nClose anything using that folder (Explorer, Docker) "
+                    "and try again.",
+                )
+                return
+            self._log_write("[COMET] Cleared old files from the staging folder (fresh start).\n\n")
         elif docker_run_dir != run_dir:
             self._log_write(
                 f"[COMET] Network path mapped for Docker:\n"
